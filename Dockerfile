@@ -4,12 +4,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
+
 COPY pyproject.toml ./
-COPY app ./app
-COPY alembic ./alembic
-COPY alembic.ini ./
-COPY scripts ./scripts
 COPY requirements.txt ./
-RUN pip install -r requirements.txt --no-cache-dir
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+COPY sql ./sql
+
+EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

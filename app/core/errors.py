@@ -1,7 +1,9 @@
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import ORJSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class ApiError(Exception):
@@ -22,14 +24,59 @@ class ApiError(Exception):
         self.extra = extra or {}
 
 
-async def api_error_handler(_request: Request, exc: ApiError) -> ORJSONResponse:
-    return ORJSONResponse(
+def error_body(exc: ApiError) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "code": exc.code,
+        "message": exc.message,
+        # The mobile client reads `detail` first (src/auth/emailAuth.ts).
+        "detail": exc.message,
+        "retryable": exc.retryable,
+        **exc.extra,
+    }
+
+
+async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status_code, content=error_body(exc))
+
+
+async def validation_error_handler(
+    _request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            "ok": False,
+            "code": "VALIDATION_ERROR",
+            "message": "Request validation failed",
+            "detail": exc.errors(),
+            "retryable": False,
+        },
+    )
+
+
+async def http_exception_handler(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    message = exc.detail if isinstance(exc.detail, str) else "Request failed"
+    return JSONResponse(
         status_code=exc.status_code,
         content={
             "ok": False,
-            "code": exc.code,
-            "retryable": exc.retryable,
-            "message": exc.message,
-            **exc.extra,
+            "code": "HTTP_ERROR",
+            "message": message,
+            "detail": message,
+            "retryable": False,
+        },
+    )
+
+
+async def unhandled_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={
+            "ok": False,
+            "code": "INTERNAL",
+            "message": "Internal server error",
+            "detail": "Internal server error",
+            "retryable": True,
         },
     )

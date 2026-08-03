@@ -1,4 +1,4 @@
-# Python 3.12+
+# Python 3.10+ (dev) / 3.12 (docker image)
 
 # API server
 fastapi>=0.115,<1
@@ -7,27 +7,20 @@ uvicorn[standard]>=0.34,<1
 # Configuration and validation
 pydantic>=2.10,<3
 pydantic-settings>=2.7,<3
+email-validator>=2,<3
 
-# PostgreSQL and migrations
+# PostgreSQL
 sqlalchemy[asyncio]>=2.0,<2.2
 asyncpg>=0.30,<1
-alembic>=1.14,<2
 
-# Redis
+# Redis (ephemeral challenges, rate limits, usage metering)
 redis>=6,<9
 
-# HTTP and Google Play Integrity
+# HTTP (Resend, LLM upstream proxy)
 httpx>=0.28,<1
-google-auth>=2.38,<3
 
-# JWT and cryptography
-PyJWT[crypto]>=2.10,<3
-cryptography>=44,<48
+# JWT
+PyJWT>=2.10,<3
 
-# Canonical JSON and serialization
-rfc8785>=0.1.4,<1
+# Serialization
 orjson>=3.10,<4
-
-# Android Key Attestation ASN.1 parser
-asn1crypto>=1.5.1,<2
-requests

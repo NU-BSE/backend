@@ -1,54 +1,78 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import Depends
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings
 from app.core.errors import ApiError
 
-bearer_scheme = HTTPBearer(auto_error=False)
+TOKEN_TYPE_ACCESS = "access"
+TOKEN_TYPE_REFRESH = "refresh"
+
+_ALGORITHM = "HS256"
 
 
 @dataclass(frozen=True)
-class CurrentUser:
+class TokenSubject:
     user_id: str
+    email: str
+    token_type: str
 
 
-def create_access_token(user_id: str, settings: Settings, ttl_minutes: int = 60) -> str:
-    now = datetime.now(UTC)
-    payload = {
+def _encode(settings: Settings, payload: dict[str, object]) -> str:
+    return jwt.encode(payload, settings.jwt_secret, algorithm=_ALGORITHM)
+
+
+def _base_claims(settings: Settings, user_id: str, email: str) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    return {
         "sub": user_id,
-        "iss": settings.auth_jwt_issuer,
-        "aud": settings.auth_jwt_audience,
+        "email": email,
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
         "iat": now,
-        "exp": now + timedelta(minutes=ttl_minutes),
     }
-    return jwt.encode(payload, settings.auth_jwt_secret, algorithm="HS256")
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    settings: Settings = Depends(get_settings),
-) -> CurrentUser:
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "Bearer token is required")
+def create_access_token(settings: Settings, user_id: str, email: str) -> str:
+    claims = _base_claims(settings, user_id, email)
+    claims["type"] = TOKEN_TYPE_ACCESS
+    claims["exp"] = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.access_token_ttl_minutes
+    )
+    return _encode(settings, claims)
 
+
+def create_refresh_token(settings: Settings, user_id: str, email: str) -> str:
+    claims = _base_claims(settings, user_id, email)
+    claims["type"] = TOKEN_TYPE_REFRESH
+    claims["exp"] = datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_ttl_days)
+    return _encode(settings, claims)
+
+
+def decode_token(settings: Settings, token: str, expected_type: str) -> TokenSubject:
     try:
         payload = jwt.decode(
-            credentials.credentials,
-            settings.auth_jwt_secret,
-            algorithms=["HS256"],
-            issuer=settings.auth_jwt_issuer,
-            audience=settings.auth_jwt_audience,
-            options={"require": ["sub", "iss", "aud", "iat", "exp"]},
+            token,
+            settings.jwt_secret,
+            algorithms=[_ALGORITHM],
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
+            options={"require": ["sub", "exp", "iat", "type"]},
         )
     except InvalidTokenError as exc:
-        raise ApiError(401, "UNAUTHORIZED", "Invalid access token") from exc
+        raise ApiError(401, "UNAUTHORIZED", "Token is invalid or expired") from exc
 
     user_id = payload.get("sub")
-    if not isinstance(user_id, str) or not user_id.strip():
-        raise ApiError(401, "UNAUTHORIZED", "Access token has no user subject")
-    return CurrentUser(user_id=user_id)
+    token_type = payload.get("type")
+    email = payload.get("email")
+    if not isinstance(user_id, str) or not user_id:
+        raise ApiError(401, "UNAUTHORIZED", "Token has no subject")
+    if token_type != expected_type:
+        raise ApiError(401, "UNAUTHORIZED", f"Expected a {expected_type} token")
+    return TokenSubject(
+        user_id=user_id,
+        email=email if isinstance(email, str) else "",
+        token_type=token_type,
+    )
