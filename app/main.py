@@ -63,7 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.redis = redis
         app.state.http_client = http_client
         app.state.email_code_service = EmailCodeService(store, settings)
-        app.state.email_sender = EmailSender(http_client, settings)
+        app.state.email_sender = EmailSender(settings)
         app.state.usage_meter = UsageMeter(store)
 
         logger.info("%s started (env=%s)", settings.app_name, settings.app_env)
@@ -80,7 +80,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Starlette types handlers against Exception; ours narrow the exc type.
     app.add_exception_handler(
         ApiError, api_error_handler  # type: ignore[arg-type]
     )
