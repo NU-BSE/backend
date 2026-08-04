@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import smtplib
-import ssl
-from email.message import EmailMessage
+from email.utils import parseaddr
+
+import httpx
 
 from app.core.config import Settings
 
 logger = logging.getLogger("app.email")
 
-SMTP_TIMEOUT_SECONDS = 15.0
+BREVO_SEND_EMAIL_URL = "https://api.brevo.com/v3/smtp/email"
 
 
 class EmailSender:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, client: httpx.AsyncClient, settings: Settings) -> None:
+        self._client = client
         self._settings = settings
 
     async def send_verification_code(self, *, to: str, code: str, purpose: str) -> None:
@@ -24,12 +24,6 @@ class EmailSender:
             if purpose == "registration"
             else "Sign in to Creepy.IM"
         )
-        text = (
-            f"{intro}\n\n"
-            f"Your verification code is: {code}\n\n"
-            f"It expires in {self._settings.email_code_ttl_seconds // 60} minutes. "
-            "If you did not request this, you can ignore this message."
-        )
         html = (
             f"<p>{intro}</p>"
             f"<p>Your verification code is: <strong>{code}</strong></p>"
@@ -37,41 +31,38 @@ class EmailSender:
             "If you did not request this, you can ignore this message.</p>"
         )
 
-        if not self._settings.brevo_smtp_username or not self._settings.brevo_smtp_password:
+        if not self._settings.brevo_api_key:
             if self._settings.is_production:
-                raise RuntimeError("Brevo SMTP credentials are not configured")
-            logger.warning(
-                "dev email to=%s code=%s (Brevo SMTP credentials not set)",
-                to,
-                code,
-            )
+                raise RuntimeError("BREVO_API_KEY is not configured")
+            logger.warning("dev email to=%s code=%s (BREVO_API_KEY not set)", to, code)
             return
 
-        message = EmailMessage()
-        message["From"] = self._settings.email_from
-        message["To"] = to
-        message["Subject"] = subject
-        message.set_content(text)
-        message.add_alternative(html, subtype="html")
+        sender_name, sender_email = parseaddr(self._settings.email_from)
+        if not sender_email:
+            raise RuntimeError("EMAIL_FROM must contain a valid email address")
 
-        await asyncio.to_thread(self._send_via_smtp, message)
-
-    def _send_via_smtp(self, message: EmailMessage) -> None:
-        try:
-            tls_context = ssl.create_default_context()
-            with smtplib.SMTP(
-                host=self._settings.brevo_smtp_host,
-                port=self._settings.brevo_smtp_port,
-                timeout=SMTP_TIMEOUT_SECONDS,
-            ) as smtp:
-                smtp.ehlo()
-                smtp.starttls(context=tls_context)
-                smtp.ehlo()
-                smtp.login(
-                    self._settings.brevo_smtp_username,
-                    self._settings.brevo_smtp_password,
-                )
-                smtp.send_message(message)
-        except (OSError, smtplib.SMTPException) as exc:
-            logger.exception("brevo smtp failed recipient=%s", message["To"])
-            raise RuntimeError("Brevo SMTP relay failed") from exc
+        response = await self._client.post(
+            BREVO_SEND_EMAIL_URL,
+            headers={
+                "accept": "application/json",
+                "api-key": self._settings.brevo_api_key,
+                "content-type": "application/json",
+            },
+            json={
+                "sender": {
+                    "name": sender_name or sender_email,
+                    "email": sender_email,
+                },
+                "to": [{"email": to}],
+                "subject": subject,
+                "htmlContent": html,
+            },
+            timeout=15.0,
+        )
+        if response.status_code >= 300:
+            logger.error(
+                "brevo api failed status=%s body=%s",
+                response.status_code,
+                response.text,
+            )
+            raise RuntimeError(f"Brevo returned {response.status_code}")

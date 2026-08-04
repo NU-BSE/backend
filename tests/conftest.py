@@ -13,7 +13,7 @@ TEST_JWT_SECRET = "test-secret-" + "x" * 40
 
 
 class CapturingEmailSender:
-    """Stands in for Brevo SMTP in tests; records codes instead of sending them."""
+    """Stands in for Brevo in tests; records codes instead of sending them."""
 
     def __init__(self) -> None:
         self.sent: list[dict[str, str]] = []
@@ -38,8 +38,7 @@ def make_settings(tmp_path) -> Settings:
         jwt_secret=TEST_JWT_SECRET,
         admin_emails="admin@creepy.im",
         llm_mock=True,
-        brevo_smtp_username="",
-        brevo_smtp_password="",
+        brevo_api_key="",
         cors_origins="http://localhost:8081",
         email_code_resend_cooldown_seconds=60,
     )
