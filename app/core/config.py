@@ -37,10 +37,7 @@ class Settings(BaseSettings):
     email_code_max_per_ip_per_hour: int = Field(default=20, ge=1, le=1000)
     email_code_max_verify_attempts: int = Field(default=5, ge=1, le=20)
 
-    brevo_smtp_host: str = "smtp-relay.brevo.com"
-    brevo_smtp_port: int = Field(default=587, ge=1, le=65535)
-    brevo_smtp_username: str = ""
-    brevo_smtp_password: str = ""
+    brevo_api_key: str = ""
     email_from: str = "Creepy.IM <no-reply@creepy.im>"
 
     llm_upstream_url: str = ""
@@ -67,10 +64,8 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET is required and must be at least 32 characters long")
         if self.is_production:
             missing: list[str] = []
-            if not self.brevo_smtp_username:
-                missing.append("BREVO_SMTP_USERNAME")
-            if not self.brevo_smtp_password:
-                missing.append("BREVO_SMTP_PASSWORD")
+            if not self.brevo_api_key:
+                missing.append("BREVO_API_KEY")
             if not self.email_from:
                 missing.append("EMAIL_FROM")
             if not self.llm_upstream_url and not self.llm_mock:
