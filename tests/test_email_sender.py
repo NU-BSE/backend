@@ -1,4 +1,5 @@
 from email.message import EmailMessage
+from typing import ClassVar
 
 import pytest
 
@@ -9,7 +10,7 @@ TEST_JWT_SECRET = "test-secret-" + "x" * 40
 
 
 class FakeSMTP:
-    instances: list["FakeSMTP"] = []
+    instances: ClassVar[list["FakeSMTP"]] = []
 
     def __init__(self, *, host: str, port: int, timeout: float) -> None:
         self.host = host
