@@ -63,7 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.redis = redis
         app.state.http_client = http_client
         app.state.email_code_service = EmailCodeService(store, settings)
-        app.state.email_sender = EmailSender(settings)
+        app.state.email_sender = EmailSender(http_client, settings)
         app.state.usage_meter = UsageMeter(store)
 
         logger.info("%s started (env=%s)", settings.app_name, settings.app_env)
