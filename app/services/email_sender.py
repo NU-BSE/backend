@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-
-import httpx
+import smtplib
+import ssl
+from email.message import EmailMessage
 
 from app.core.config import Settings
 
 logger = logging.getLogger("app.email")
 
-RESEND_URL = "https://api.resend.com/emails"
+SMTP_TIMEOUT_SECONDS = 15.0
 
 
 class EmailSender:
-    def __init__(self, client: httpx.AsyncClient, settings: Settings) -> None:
-        self._client = client
+    def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
     async def send_verification_code(self, *, to: str, code: str, purpose: str) -> None:
@@ -36,24 +37,41 @@ class EmailSender:
             "If you did not request this, you can ignore this message.</p>"
         )
 
-        if not self._settings.resend_api_key:
+        if not self._settings.brevo_smtp_username or not self._settings.brevo_smtp_password:
             if self._settings.is_production:
-                raise RuntimeError("RESEND_API_KEY is not configured")
-            logger.warning("dev email to=%s code=%s (RESEND_API_KEY not set)", to, code)
+                raise RuntimeError("Brevo SMTP credentials are not configured")
+            logger.warning(
+                "dev email to=%s code=%s (Brevo SMTP credentials not set)",
+                to,
+                code,
+            )
             return
 
-        response = await self._client.post(
-            RESEND_URL,
-            headers={"Authorization": f"Bearer {self._settings.resend_api_key}"},
-            json={
-                "from": self._settings.email_from,
-                "to": [to],
-                "subject": subject,
-                "text": text,
-                "html": html,
-            },
-            timeout=15.0,
-        )
-        if response.status_code >= 300:
-            logger.error("resend failed status=%s body=%s", response.status_code, response.text)
-            raise RuntimeError(f"Resend returned {response.status_code}")
+        message = EmailMessage()
+        message["From"] = self._settings.email_from
+        message["To"] = to
+        message["Subject"] = subject
+        message.set_content(text)
+        message.add_alternative(html, subtype="html")
+
+        await asyncio.to_thread(self._send_via_smtp, message)
+
+    def _send_via_smtp(self, message: EmailMessage) -> None:
+        try:
+            tls_context = ssl.create_default_context()
+            with smtplib.SMTP(
+                host=self._settings.brevo_smtp_host,
+                port=self._settings.brevo_smtp_port,
+                timeout=SMTP_TIMEOUT_SECONDS,
+            ) as smtp:
+                smtp.ehlo()
+                smtp.starttls(context=tls_context)
+                smtp.ehlo()
+                smtp.login(
+                    self._settings.brevo_smtp_username,
+                    self._settings.brevo_smtp_password,
+                )
+                smtp.send_message(message)
+        except (OSError, smtplib.SMTPException) as exc:
+            logger.exception("brevo smtp failed recipient=%s", message["To"])
+            raise RuntimeError("Brevo SMTP relay failed") from exc

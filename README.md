@@ -17,7 +17,7 @@ Everything else stays on the device: chat history, auth providers, attestation.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| POST | `/auth/email/request-code` | – | send a 6-digit code by email (Resend) |
+| POST | `/auth/email/request-code` | – | send a 6-digit code by email (Brevo SMTP) |
 | POST | `/auth/email/verify-code` | – | verify code, upsert user, issue JWTs |
 | POST | `/auth/refresh` | refresh token | new access token |
 | POST | `/auth/logout` | – | client-side discard (contract only) |
@@ -75,7 +75,9 @@ The schema (`sql/migrate_001.sql`) is applied idempotently on startup and the
 
 With `LLM_MOCK=true` (default in `.env.example`) the agent streams a canned
 reply, so the whole gate can be exercised without any LLM keys. With no
-`RESEND_API_KEY`, verification codes are logged instead of emailed.
+`BREVO_SMTP_USERNAME` or `BREVO_SMTP_PASSWORD`, verification codes are logged
+instead of emailed outside production. Production also requires a Brevo-verified
+sender in `EMAIL_FROM`.
 
 ### Granting access (manual MVP)
 
