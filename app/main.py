@@ -108,6 +108,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin.router)
     app.include_router(chat.router)
 
+
     @app.get("/")
     async def root() -> dict[str, str]:
         return {"service": settings.app_name, "status": "ok"}

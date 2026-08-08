@@ -118,3 +118,5 @@ class SubscriptionEntitlement(Base):
     source: Mapped[str] = mapped_column(String, default="subscription")
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+

@@ -138,3 +138,4 @@ CREATE TABLE IF NOT EXISTS subscription_entitlements (
   expires_at  TIMESTAMPTZ,
   PRIMARY KEY (user_id, entitlement)
 );
+
