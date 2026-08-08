@@ -44,21 +44,21 @@ CREATE TABLE IF NOT EXISTS users (
 -- The agent-usage fields are what the server checks before letting a user
 -- talk to the AI.
 CREATE TABLE IF NOT EXISTS subscription_plans (
-  plan_id                 TEXT PRIMARY KEY,
-  code                    TEXT UNIQUE NOT NULL,
-  name                    TEXT NOT NULL,
-  description             TEXT,
-  amount                  NUMERIC(12, 2) NOT NULL DEFAULT 0,
-  currency                TEXT NOT NULL DEFAULT 'USD',
-  interval                TEXT NOT NULL CHECK (interval IN ('week', 'month', 'year', 'lifetime')),
-  interval_count          INTEGER NOT NULL DEFAULT 1,
-  trial_days              INTEGER NOT NULL DEFAULT 0,
+  plan_id                    TEXT PRIMARY KEY,
+  code                       TEXT UNIQUE NOT NULL,
+  name                       TEXT NOT NULL,
+  description                TEXT,
+  amount                     NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  currency                   TEXT NOT NULL DEFAULT 'USD',
+  interval                   TEXT NOT NULL CHECK (interval IN ('week', 'month', 'year', 'lifetime')),
+  interval_count             INTEGER NOT NULL DEFAULT 1,
+  trial_days                 INTEGER NOT NULL DEFAULT 0,
   -- Agent-usage limits enforced by the backend.
-  agent_access            BOOLEAN NOT NULL DEFAULT FALSE,
-  cloud_agent_allowed     BOOLEAN NOT NULL DEFAULT FALSE,
+  agent_access               BOOLEAN NOT NULL DEFAULT FALSE,
+  cloud_agent_allowed        BOOLEAN NOT NULL DEFAULT FALSE,
   max_agent_messages_per_day INTEGER,
-  active                  BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+  active                     BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- A user's subscription. Provider-agnostic: Stripe, Google Play Billing or
@@ -138,4 +138,3 @@ CREATE TABLE IF NOT EXISTS subscription_entitlements (
   expires_at  TIMESTAMPTZ,
   PRIMARY KEY (user_id, entitlement)
 );
-
