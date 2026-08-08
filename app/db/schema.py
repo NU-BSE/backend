@@ -43,6 +43,19 @@ SEED_PLANS: list[dict[str, object]] = [
 ]
 
 
+def _split_statements(sql: str) -> list[str]:
+    statements: list[str] = []
+    for raw in sql.split(";"):
+        stmt = raw.strip()
+        if not stmt:
+            continue
+        lines = [line for line in stmt.splitlines()
+                 if line.strip() and not line.strip().startswith("--")]
+        if lines:
+            statements.append(stmt)
+    return statements
+
+
 async def apply_schema(engine: AsyncEngine, settings: Settings) -> None:
     """Idempotently apply the persisted schema.
 
@@ -56,7 +69,8 @@ async def apply_schema(engine: AsyncEngine, settings: Settings) -> None:
     if engine.dialect.name == "postgresql":
         sql = await anyio.Path(settings.schema_file).read_text(encoding="utf-8")
         async with engine.begin() as conn:
-            await conn.exec_driver_sql(sql)
+            for statement in _split_statements(sql):
+                await conn.exec_driver_sql(statement)
         logger.info("schema applied from %s", settings.schema_file)
     else:
         async with engine.begin() as conn:
