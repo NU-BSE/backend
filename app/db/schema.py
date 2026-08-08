@@ -1,5 +1,5 @@
 import logging
-
+import re
 import anyio
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -44,15 +44,15 @@ SEED_PLANS: list[dict[str, object]] = [
 
 
 def _split_statements(sql: str) -> list[str]:
+    # Strip single-line comments (-- ...) entirely
+    cleaned_sql = re.sub(r"--.*$", "", sql, flags=re.MULTILINE)
+    
     statements: list[str] = []
-    for raw in sql.split(";"):
+    for raw in cleaned_sql.split(";"):
         stmt = raw.strip()
-        if not stmt:
-            continue
-        lines = [line for line in stmt.splitlines()
-                 if line.strip() and not line.strip().startswith("--")]
-        if lines:
+        if stmt:
             statements.append(stmt)
+            
     return statements
 
 
