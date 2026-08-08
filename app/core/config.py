@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     email_code_max_per_ip_per_hour: int = Field(default=20, ge=1, le=1000)
     email_code_max_verify_attempts: int = Field(default=5, ge=1, le=20)
 
-    brevo_api_key: str = ""
-    email_from: str = "Creepy.IM <no-reply@creepy.im>"
+    brevo_api_key: str
+    email_from: str
 
     llm_upstream_url: str = ""
     llm_upstream_api_key: str = ""
