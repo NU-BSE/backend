@@ -57,12 +57,20 @@ class UsageInfo(CamelModel):
     total_tokens: int = 0
 
 
+class ConnectionSummary(CamelModel):
+    id: str
+    provider: str
+    display_name: str
+    capabilities: list[str] = Field(default_factory=list)
+
+
 class AgentStepRequest(CamelModel):
     request_id: str
     run_id: str
     routing: RoutingContext = Field(default_factory=RoutingContext)
     messages: list[dict[str, Any]] = Field(default_factory=list)
     tools: list[dict[str, Any]] = Field(default_factory=list)
+    connections: list[ConnectionSummary] = Field(default_factory=list)
 
 
 class ToolCallResult(CamelModel):

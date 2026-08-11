@@ -20,6 +20,7 @@ from app.llm.schemas import (
     AgentResult,
     AgentStepRequest,
     AgentStepResponse,
+    ConnectionSummary,
     ModelTier,
     ToolCallResult,
     UsageInfo,
@@ -37,7 +38,6 @@ def _make_usage_info(raw: dict[str, Any]) -> UsageInfo:
 
 
 def to_openrouter_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert frontend AgentToolDefinition list → OpenRouter function-calling format."""
     converted: list[dict[str, Any]] = []
     for tool in tools:
         converted.append({
@@ -51,8 +51,104 @@ def to_openrouter_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return converted
 
 
+def to_openrouter_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+
+    for message in messages:
+        role = message.get("role")
+
+        if role == "user":
+            converted.append({
+                "role": "user",
+                "content": message.get("content", ""),
+            })
+            continue
+
+        if role == "assistant":
+            tool_calls = message.get("toolCalls")
+
+            if isinstance(tool_calls, list) and tool_calls:
+                converted.append({
+                    "role": "assistant",
+                    "content": message.get("content") or None,
+                    "tool_calls": [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["toolName"],
+                                "arguments": json.dumps(
+                                    call.get("args", {}),
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                        for call in tool_calls
+                    ],
+                })
+            else:
+                converted.append({
+                    "role": "assistant",
+                    "content": message.get("content", ""),
+                })
+
+            continue
+
+        if role == "tool":
+            converted.append({
+                "role": "tool",
+                "tool_call_id": message["toolCallId"],
+                "content": json.dumps(
+                    message.get("result", {}),
+                    ensure_ascii=False,
+                ),
+            })
+
+    return converted
+
+
+def build_agent_system_message(
+    connections: list[ConnectionSummary],
+) -> dict[str, str]:
+    if connections:
+        lines = [
+            (
+                f"- id: {connection.id}; "
+                f"provider: {connection.provider}; "
+                f"name: {connection.display_name}; "
+                f"capabilities: {', '.join(connection.capabilities)}"
+            )
+            for connection in connections
+        ]
+        connection_text = "\n".join(lines)
+    else:
+        connection_text = "- none"
+
+    content = f"""
+You are the action planner of a mobile AI assistant.
+
+Rules:
+- Use only tools provided in the request.
+- Never invent tool names.
+- Never invent connection IDs.
+- Use only connection IDs listed below.
+- Tool execution happens locally on the user's device.
+- User approval for side effects is handled locally.
+- If a required service is not connected, explain that instead of inventing access.
+
+Connected accounts:
+{connection_text}
+""".strip()
+
+    return {
+        "role": "system",
+        "content": content,
+    }
+
+
 def openrouter_message_to_result(message: dict[str, Any]) -> AgentResult:
-    """Convert an OpenRouter choice message into the client's AgentModelResult."""
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list) and tool_calls:
         items: list[ToolCallResult] = []
@@ -122,11 +218,16 @@ async def agent_step(
                 else None
             )
 
+            openrouter_messages = [
+                build_agent_system_message(request.connections),
+                *to_openrouter_messages(request.messages),
+            ]
+
             completion = await openrouter_chat_completion(
                 client,
                 settings,
                 model_id=model_id,
-                messages=request.messages,
+                messages=openrouter_messages,
                 tools=openrouter_tools,
             )
             latency_ms = round((time.perf_counter() - started) * 1000, 1)

@@ -61,10 +61,8 @@ class ExpertBudgetService:
         daily_limit = self._settings.llm_expert_daily_user_limit
         daily_ttl = _seconds_until_next_utc_day() + 3600
 
-        # Atomically increment the daily counter.
         new_daily = await self._store.incr(daily_key, daily_ttl)
         if new_daily > daily_limit:
-            # Rollback — the request exceeded the limit.
             await self._store.decr(daily_key)
             return False
 
@@ -78,25 +76,12 @@ class ExpertBudgetService:
             await self._store.decr(daily_key)
             return False
 
-        return True
-
-    async def record_expert_use(
-        self,
-        *,
-        user_id: str,
-        run_id: str,
-    ) -> None:
-        """Record expert usage without limit checking (counters already reserved)."""
-        daily_key = _user_day_key(user_id)
-        daily_ttl = _seconds_until_next_utc_day() + 3600
-        await self._store.incr(daily_key, daily_ttl)
-
-        run_key = _run_key(user_id, run_id)
-        run_ttl = 86400
-        await self._store.incr(run_key, run_ttl)
-
         logger.info(
-            "expert use recorded user=%s run=%s",
+            "expert reservation user=%s run=%s daily=%s/%s",
             user_id,
             run_id,
+            new_daily,
+            daily_limit,
         )
+
+        return True

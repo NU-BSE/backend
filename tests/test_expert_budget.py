@@ -71,8 +71,8 @@ class TestExpertBudgetService:
 
         assert await budget.reserve_expert(user_id="u-1", run_id="r-over") is False
 
-    async def test_record_expert_use(self, budget):
-        await budget.record_expert_use(user_id="u-1", run_id="r-1")
+    async def test_reserve_records_correctly(self, budget):
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is True
         assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is True
 
     async def test_reserve_rolls_back_daily_on_run_overflow(self, store, settings):

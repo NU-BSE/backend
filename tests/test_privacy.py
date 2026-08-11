@@ -102,7 +102,7 @@ class TestPrivacyInGatewayLogs:
         budget = ExpertBudgetService(store, settings)
 
         with caplog.at_level(logging.INFO, logger="app.llm.expert_budget"):
-            await budget.record_expert_use(
+            await budget.reserve_expert(
                 user_id="user-abc-123", run_id="run-xyz",
             )
 
