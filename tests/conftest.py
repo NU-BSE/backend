@@ -39,8 +39,13 @@ def make_settings(tmp_path) -> Settings:
         admin_emails="admin@creepy.im",
         llm_mock=True,
         brevo_api_key="",
+        email_from="test@test.com",
         cors_origins="http://localhost:8081",
         email_code_resend_cooldown_seconds=60,
+        openrouter_api_key="sk-test",
+        llm_model_fast="test/fast-model",
+        llm_model_normal="test/normal-model",
+        llm_model_expert="test/expert-model",
     )
 
 

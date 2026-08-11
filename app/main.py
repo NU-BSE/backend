@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routes import admin, auth, chat, health, subscriptions, users
+from app.api.routes import admin, agent, auth, chat, health, subscriptions, users
 from app.core.config import Settings, get_settings
 from app.core.errors import (
     ApiError,
@@ -107,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(subscriptions.router)
     app.include_router(admin.router)
     app.include_router(chat.router)
+    app.include_router(agent.router)
 
 
     @app.get("/")
