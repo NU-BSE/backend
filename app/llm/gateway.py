@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -15,7 +16,14 @@ from app.llm.routing import (
     select_effective_tier,
     validate_routing_context,
 )
-from app.llm.schemas import AgentStepRequest, AgentStepResponse, ModelTier, UsageInfo
+from app.llm.schemas import (
+    AgentResult,
+    AgentStepRequest,
+    AgentStepResponse,
+    ModelTier,
+    ToolCallResult,
+    UsageInfo,
+)
 
 logger = logging.getLogger("app.llm.gateway")
 
@@ -28,6 +36,51 @@ def _make_usage_info(raw: dict[str, Any]) -> UsageInfo:
     )
 
 
+def to_openrouter_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert frontend AgentToolDefinition list → OpenRouter function-calling format."""
+    converted: list[dict[str, Any]] = []
+    for tool in tools:
+        converted.append({
+            "type": "function",
+            "function": {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("inputSchema", tool.get("input_schema", {})),
+            },
+        })
+    return converted
+
+
+def openrouter_message_to_result(message: dict[str, Any]) -> AgentResult:
+    """Convert an OpenRouter choice message into the client's AgentModelResult."""
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        items: list[ToolCallResult] = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            func = tc.get("function") if isinstance(tc.get("function"), dict) else None
+            args: dict[str, Any] = {}
+            if func and isinstance(func.get("arguments"), str):
+                try:
+                    args = json.loads(func["arguments"])
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+            items.append(
+                ToolCallResult(
+                    id=tc.get("id", ""),
+                    tool_name=func.get("name", "") if func else "",
+                    args=args,
+                )
+            )
+        if items:
+            return AgentResult(kind="tool_calls", tool_calls=items)
+
+    content = message.get("content")
+    text = str(content) if isinstance(content, str) else ""
+    return AgentResult(kind="final", text=text)
+
+
 async def agent_step(
     client: httpx.AsyncClient,
     settings: Settings,
@@ -36,21 +89,20 @@ async def agent_step(
     *,
     user_id: str,
 ) -> AgentStepResponse:
-    validate_routing_context(request.routing_context)
+    ctx = request.routing
+    validate_routing_context(ctx)
 
     effective_tier, reason = select_effective_tier(
-        request.model_tier,
-        request.routing_context,
+        ctx,
         settings,
         expert_budget_ok=True,
         expert_disabled=not settings.llm_allow_expert,
     )
 
     if effective_tier == "expert":
-        if not await budget.can_use_expert(user_id=user_id, run_id=request.run_id):
+        reserved = await budget.reserve_expert(user_id=user_id, run_id=request.run_id)
+        if not reserved:
             effective_tier, reason = ("normal", "expert_budget_unavailable")
-        else:
-            await budget.record_expert_use(user_id=user_id, run_id=request.run_id)
 
     tried_fallback = False
     current_tier: ModelTier = effective_tier
@@ -63,18 +115,26 @@ async def agent_step(
 
         try:
             started = time.perf_counter()
+
+            openrouter_tools = (
+                to_openrouter_tools(request.tools)
+                if request.tools
+                else None
+            )
+
             completion = await openrouter_chat_completion(
                 client,
                 settings,
                 model_id=model_id,
                 messages=request.messages,
-                tools=request.tools if request.tools else None,
+                tools=openrouter_tools,
             )
             latency_ms = round((time.perf_counter() - started) * 1000, 1)
 
             message = extract_message(completion)
             usage_raw = extract_usage(completion)
             usage_info = _make_usage_info(usage_raw)
+            result = openrouter_message_to_result(message)
 
             logger.info(
                 "agent step completed user=%s run=%s tier=%s model=%s latency_ms=%s",
@@ -88,10 +148,10 @@ async def agent_step(
             return AgentStepResponse(
                 request_id=request.request_id,
                 run_id=request.run_id,
-                requested_model_tier=request.model_tier,
+                requested_model_tier=ctx.requested_tier,
                 effective_model_tier=current_tier,
                 routing_reason=current_reason,
-                message=message,
+                result=result,
                 usage=usage_info,
             )
 
@@ -119,4 +179,6 @@ async def agent_step(
 def _get_fallback_tier(tier: ModelTier) -> ModelTier:
     if tier == "expert":
         return "normal"
+    if tier == "normal":
+        return "fast"
     return tier

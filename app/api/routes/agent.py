@@ -48,8 +48,9 @@ async def agent_step_endpoint(
     except RoutingValidationError as exc:
         raise ApiError(422, exc.code, str(exc)) from exc
     except LLMError as exc:
+        status_code = 502 if exc.retryable else 400
         raise ApiError(
-            502 if exc.retryable else 400,
+            status_code,
             exc.code,
             str(exc),
             retryable=exc.retryable,

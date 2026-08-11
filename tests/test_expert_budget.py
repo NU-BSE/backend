@@ -37,54 +37,52 @@ class TestExpertBudgetService:
         settings.llm_expert_daily_user_limit = 2
         budget = ExpertBudgetService(store, settings)
 
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is True
-        await budget.record_expert_use(user_id="u-1", run_id="r-1")
-
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-2") is True
-        await budget.record_expert_use(user_id="u-1", run_id="r-2")
-
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-3") is False
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is True
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-2") is True
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-3") is False
 
     async def test_per_run_limit_exhausted(self, store, settings):
         settings.llm_expert_max_calls_per_run = 2
         budget = ExpertBudgetService(store, settings)
 
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is True
-        await budget.record_expert_use(user_id="u-1", run_id="r-1")
-
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is True
-        await budget.record_expert_use(user_id="u-1", run_id="r-1")
-
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is False
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is True
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is True
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is False
 
     async def test_different_runs_have_separate_limits(self, store, settings):
         settings.llm_expert_max_calls_per_run = 1
         budget = ExpertBudgetService(store, settings)
 
-        await budget.record_expert_use(user_id="u-1", run_id="r-1")
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is False
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-2") is True
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is True
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is False
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-2") is True
 
     async def test_zero_limit_denies_all(self, store, settings):
         settings.llm_expert_daily_user_limit = 0
         budget = ExpertBudgetService(store, settings)
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is False
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is False
 
-    async def test_record_expert_use_increments_counters(self, store, settings):
+    async def test_reserve_is_atomic(self, store, settings):
         settings.llm_expert_daily_user_limit = 5
         budget = ExpertBudgetService(store, settings)
 
-        for _i in range(3):
-            await budget.record_expert_use(user_id="u-1", run_id="r-1")
+        for _i in range(5):
+            assert await budget.reserve_expert(user_id="u-1", run_id=f"r-{_i}")
 
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-2") is True
-        await budget.record_expert_use(user_id="u-1", run_id="r-2")
-        await budget.record_expert_use(user_id="u-1", run_id="r-2")
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-over") is False
 
-        assert await budget.can_use_expert(user_id="u-1", run_id="r-3") is False
-
-    async def test_record_expert_use_with_cost(self, budget):
-        await budget.record_expert_use(
-            user_id="u-1", run_id="r-1", estimated_cost_usd=0.05
-        )
+    async def test_record_expert_use(self, budget):
+        await budget.record_expert_use(user_id="u-1", run_id="r-1")
         assert await budget.can_use_expert(user_id="u-1", run_id="r-1") is True
+
+    async def test_reserve_rolls_back_daily_on_run_overflow(self, store, settings):
+        settings.llm_expert_daily_user_limit = 10
+        settings.llm_expert_max_calls_per_run = 1
+        budget = ExpertBudgetService(store, settings)
+
+        # Use the one allowed call in this run.
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is True
+        # Next call to same run must overflow the per-run cap.
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-1") is False
+        # Daily counter should be rolled back — only 1 used total, not 2.
+        assert await budget.reserve_expert(user_id="u-1", run_id="r-2") is True

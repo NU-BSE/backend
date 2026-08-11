@@ -88,6 +88,14 @@ class Settings(BaseSettings):
                 missing.append("LLM_UPSTREAM_URL")
             if not self.cors_origins:
                 missing.append("CORS_ORIGINS")
+            if not self.openrouter_api_key:
+                missing.append("OPENROUTER_API_KEY")
+            if not self.llm_model_fast:
+                missing.append("LLM_MODEL_FAST")
+            if not self.llm_model_normal:
+                missing.append("LLM_MODEL_NORMAL")
+            if not self.llm_model_expert:
+                missing.append("LLM_MODEL_EXPERT")
             if missing:
                 raise ValueError(f"Missing production settings: {', '.join(missing)}")
         return self

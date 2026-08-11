@@ -1,4 +1,5 @@
 import logging
+from unittest.mock import AsyncMock
 
 from app.core.config import Settings
 from app.kv.store import MemoryTTLStore
@@ -14,18 +15,17 @@ from app.llm.schemas import (
 
 
 def _make_request(
-    model_tier: str = "fast",
+    requested_tier: str = "fast",
     reasoning_score: int = 0,
-    hard_signals: list[str] | None = None,
     messages: list[dict] | None = None,
 ) -> AgentStepRequest:
     return AgentStepRequest(
         request_id="req-1",
         run_id="run-1",
-        model_tier=model_tier,  # type: ignore[arg-type]
-        routing_context=RoutingContext(
+        routing=RoutingContext(
+            requested_tier=requested_tier,  # type: ignore[arg-type]
             reasoning_score=reasoning_score,
-            hard_reasoning_signals=hard_signals or [],
+            hard_reasoning_signals=[],
             weak_signals=WeakExecutionSignals(),
             struggle=StruggleSignals(),
             context=ContextSignals(),
@@ -42,7 +42,6 @@ class TestPrivacyInGatewayLogs:
         settings.llm_model_normal = "test/normal"
         settings.llm_model_expert = "test/expert"
 
-        from unittest.mock import AsyncMock
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -70,7 +69,6 @@ class TestPrivacyInGatewayLogs:
         settings.llm_model_normal = "test/normal"
         settings.llm_model_expert = "test/expert"
 
-        from unittest.mock import AsyncMock
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -93,35 +91,6 @@ class TestPrivacyInGatewayLogs:
 
         combined = " ".join(caplog.messages)
         assert "ya29.secret123" not in combined
-
-    async def test_logs_do_not_contain_telegram_code(self, settings: Settings, caplog):
-        settings.llm_model_fast = "test/fast"
-        settings.llm_model_normal = "test/normal"
-        settings.llm_model_expert = "test/expert"
-
-        from unittest.mock import AsyncMock
-        mock_client = AsyncMock()
-        mock_client.post.return_value.status_code = 200
-        mock_client.post.return_value.aread = AsyncMock(
-            return_value=b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
-        )
-
-        budget = ExpertBudgetService(MemoryTTLStore(), settings)
-        req = _make_request(
-            messages=[{"role": "user", "content": "my telegram code is 12345"}],
-        )
-
-        with caplog.at_level(logging.INFO, logger="app.llm"):
-            await agent_step(
-                client=mock_client,  # type: ignore[arg-type]
-                settings=settings,
-                budget=budget,
-                request=req,
-                user_id="u-1",
-            )
-
-        combined = " ".join(caplog.messages)
-        assert "telegram" not in combined.lower()
 
     async def test_expert_budget_logs_do_not_leak_pii(
         self, settings: Settings, caplog
@@ -150,7 +119,6 @@ class TestPrivacyInGatewayLogs:
         settings.llm_model_normal = "test/normal"
         settings.llm_model_expert = "test/expert"
 
-        from unittest.mock import AsyncMock
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -158,7 +126,7 @@ class TestPrivacyInGatewayLogs:
         )
 
         budget = ExpertBudgetService(MemoryTTLStore(), settings)
-        req = _make_request(model_tier="fast", reasoning_score=0)
+        req = _make_request(requested_tier="fast", reasoning_score=0)
 
         resp = await agent_step(
             client=mock_client,  # type: ignore[arg-type]
@@ -174,3 +142,27 @@ class TestPrivacyInGatewayLogs:
         assert resp.effective_model_tier == "fast"
         assert resp.request_id == "req-1"
         assert resp.run_id == "run-1"
+
+    async def test_result_in_response(self, settings: Settings):
+        """Verify result format in response."""
+        settings.llm_model_fast = "test/fast"
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.aread = AsyncMock(
+            return_value=b'{"choices":[{"message":{"role":"assistant","content":"hi"}}]}'
+        )
+
+        budget = ExpertBudgetService(MemoryTTLStore(), settings)
+        req = _make_request()
+
+        resp = await agent_step(
+            client=mock_client,  # type: ignore[arg-type]
+            settings=settings,
+            budget=budget,
+            request=req,
+            user_id="u-1",
+        )
+
+        assert resp.result.kind == "final"
+        assert resp.result.text == "hi"

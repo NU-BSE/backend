@@ -20,9 +20,15 @@ class ExpertBudgetExhausted(LLMError):
 
 class OpenRouterError(LLMError):
     def __init__(self, status_code: int, body: str) -> None:
+        retryable = (
+            status_code == 0
+            or status_code == 408
+            or status_code == 429
+            or status_code >= 500
+        )
         super().__init__(
             f"OpenRouter returned {status_code}: {body}",
             code="OPENROUTER_ERROR",
-            retryable=status_code >= 500,
+            retryable=retryable,
         )
         self.status_code = status_code

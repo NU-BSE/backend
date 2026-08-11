@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.config import Settings
+from app.kv.store import MemoryTTLStore
 from app.llm.errors import RoutingValidationError
 from app.llm.expert_budget import ExpertBudgetService
 from app.llm.gateway import agent_step
@@ -16,8 +17,12 @@ from app.llm.schemas import (
 )
 
 
+def _budget(settings: Settings) -> ExpertBudgetService:
+    return ExpertBudgetService(MemoryTTLStore(), settings)
+
+
 def _make_request(
-    model_tier: str = "fast",
+    requested_tier: str = "fast",
     reasoning_score: int = 0,
     hard_signals: list[str] | None = None,
     failed_plans: int = 0,
@@ -34,8 +39,8 @@ def _make_request(
     return AgentStepRequest(
         request_id="req-1",
         run_id="run-1",
-        model_tier=model_tier,  # type: ignore[arg-type]
-        routing_context=RoutingContext(
+        routing=RoutingContext(
+            requested_tier=requested_tier,  # type: ignore[arg-type]
             reasoning_score=reasoning_score,
             hard_reasoning_signals=hard_signals or [],
             weak_signals=WeakExecutionSignals(
@@ -57,34 +62,11 @@ def _make_request(
     )
 
 
-def _make_completion(
-    message: dict[str, Any], usage: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    return {
-        "choices": [{"message": message}],
-        "usage": usage or {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
-    }
-
-
-@pytest.fixture
-def budget(settings: Settings) -> ExpertBudgetService:
-    from app.kv.store import MemoryTTLStore
-    return ExpertBudgetService(MemoryTTLStore(), settings)
-
-
 class TestAgentStepRouting:
 
-    async def test_easy_long_task_stays_fast_or_normal(
-        self, settings: Settings, budget: ExpertBudgetService
-    ):
-        """Long tool task without reasoning complexity stays fast/normal, never expert."""
-        req = _make_request(
-            model_tier="fast",
-            reasoning_score=2,
-            tool_calls=8,
-            connector_count=2,
-        )
-        from unittest.mock import AsyncMock
+    async def test_fast_stays_fast(self, settings: Settings):
+        """Backend never upgrades from fast."""
+        req = _make_request(requested_tier="fast", reasoning_score=2, tool_calls=8)
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -94,24 +76,58 @@ class TestAgentStepRouting:
         resp = await agent_step(
             client=mock_client,  # type: ignore[arg-type]
             settings=settings,
-            budget=budget,
+            budget=_budget(settings),
             request=req,
             user_id="u-1",
         )
-        assert resp.effective_model_tier in ("fast", "normal")
-        assert resp.effective_model_tier != "expert"
+        assert resp.effective_model_tier == "fast"
 
-    async def test_hard_short_task_goes_expert(
-        self, settings: Settings, budget: ExpertBudgetService
+    async def test_fast_stays_fast_even_with_emergency(
+        self, settings: Settings
     ):
-        """High reasoning score + hard signals → expert."""
-        req = _make_request(
-            model_tier="normal",
-            reasoning_score=12,
-            hard_signals=["constraint_solving", "ranking_or_optimization"],
-            tool_calls=2,
+        """Backend never upgrades from fast even with planner stuck."""
+        req = _make_request(requested_tier="fast", failed_plans=3)
+        mock_client = AsyncMock()
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.aread = AsyncMock(
+            return_value=b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
         )
-        from unittest.mock import AsyncMock
+
+        resp = await agent_step(
+            client=mock_client,  # type: ignore[arg-type]
+            settings=settings,
+            budget=_budget(settings),
+            request=req,
+            user_id="u-1",
+        )
+        assert resp.effective_model_tier == "fast"
+
+    async def test_normal_stays_normal(self, settings: Settings):
+        req = _make_request(requested_tier="normal", reasoning_score=5)
+        mock_client = AsyncMock()
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.aread = AsyncMock(
+            return_value=b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+        )
+
+        resp = await agent_step(
+            client=mock_client,  # type: ignore[arg-type]
+            settings=settings,
+            budget=_budget(settings),
+            request=req,
+            user_id="u-1",
+        )
+        assert resp.effective_model_tier == "normal"
+
+    async def test_expert_with_evidence_allowed(
+        self, settings: Settings
+    ):
+        """Expert requested + hard reasoning signals → allowed."""
+        req = _make_request(
+            requested_tier="expert",
+            reasoning_score=12,
+            hard_signals=["constraint_solving"],
+        )
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -121,22 +137,18 @@ class TestAgentStepRouting:
         resp = await agent_step(
             client=mock_client,  # type: ignore[arg-type]
             settings=settings,
-            budget=budget,
+            budget=_budget(settings),
             request=req,
             user_id="u-1",
         )
         assert resp.effective_model_tier == "expert"
         assert resp.routing_reason == "hard_reasoning"
 
-    async def test_client_asks_expert_without_evidence_downgraded(
-        self, settings: Settings, budget: ExpertBudgetService
+    async def test_expert_without_evidence_downgraded(
+        self, settings: Settings
     ):
-        """Buggy frontend asks for expert with no evidence → downgrade."""
-        req = _make_request(
-            model_tier="expert",
-            reasoning_score=2,
-        )
-        from unittest.mock import AsyncMock
+        """Expert requested with no hard signals → downgraded."""
+        req = _make_request(requested_tier="expert", reasoning_score=2)
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -146,74 +158,21 @@ class TestAgentStepRouting:
         resp = await agent_step(
             client=mock_client,  # type: ignore[arg-type]
             settings=settings,
-            budget=budget,
+            budget=_budget(settings),
             request=req,
             user_id="u-1",
         )
-        assert resp.effective_model_tier != "expert"
+        assert resp.effective_model_tier == "normal"
 
-    async def test_planner_stuck_triggers_expert(
-        self, settings: Settings, budget: ExpertBudgetService
-    ):
-        """failed_plans >= 2 triggers emergency expert."""
-        req = _make_request(
-            model_tier="normal",
-            reasoning_score=5,
-            failed_plans=2,
-        )
-        from unittest.mock import AsyncMock
-        mock_client = AsyncMock()
-        mock_client.post.return_value.status_code = 200
-        mock_client.post.return_value.aread = AsyncMock(
-            return_value=b'{"choices":[{"message":{"role":"assistant","content":"rescued"}}]}'
-        )
-
-        resp = await agent_step(
-            client=mock_client,  # type: ignore[arg-type]
-            settings=settings,
-            budget=budget,
-            request=req,
-            user_id="u-1",
-        )
-        assert resp.effective_model_tier == "expert"
-        assert resp.routing_reason == "planner_stuck"
-
-    async def test_loop_detected_triggers_expert(
-        self, settings: Settings, budget: ExpertBudgetService
-    ):
-        """repeated_tool_pattern triggers emergency expert."""
-        req = _make_request(
-            model_tier="normal",
-            reasoning_score=3,
-            repeated_tool_pattern=True,
-        )
-        from unittest.mock import AsyncMock
-        mock_client = AsyncMock()
-        mock_client.post.return_value.status_code = 200
-        mock_client.post.return_value.aread = AsyncMock(
-            return_value=b'{"choices":[{"message":{"role":"assistant","content":"unlooped"}}]}'
-        )
-
-        resp = await agent_step(
-            client=mock_client,  # type: ignore[arg-type]
-            settings=settings,
-            budget=budget,
-            request=req,
-            user_id="u-1",
-        )
-        assert resp.effective_model_tier == "expert"
-        assert resp.routing_reason == "planner_stuck"
-
-    async def test_expert_disabled_returns_normal(
-        self, settings: Settings, budget: ExpertBudgetService
+    async def test_expert_disabled_downgrades(
+        self, settings: Settings
     ):
         settings.llm_allow_expert = False
         req = _make_request(
-            model_tier="expert",
+            requested_tier="expert",
             reasoning_score=15,
             hard_signals=["constraint_solving"],
         )
-        from unittest.mock import AsyncMock
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -223,7 +182,7 @@ class TestAgentStepRouting:
         resp = await agent_step(
             client=mock_client,  # type: ignore[arg-type]
             settings=settings,
-            budget=budget,
+            budget=_budget(settings),
             request=req,
             user_id="u-1",
         )
@@ -231,16 +190,15 @@ class TestAgentStepRouting:
         assert resp.routing_reason == "expert_disabled"
         settings.llm_allow_expert = True
 
-    async def test_expert_budget_denied_falls_back_to_normal(
-        self, settings: Settings, budget: ExpertBudgetService
+    async def test_expert_budget_denied_downgrades(
+        self, settings: Settings
     ):
         settings.llm_expert_daily_user_limit = 0
         req = _make_request(
-            model_tier="expert",
+            requested_tier="expert",
             reasoning_score=15,
             hard_signals=["cross_source_synthesis"],
         )
-        from unittest.mock import AsyncMock
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
@@ -250,7 +208,7 @@ class TestAgentStepRouting:
         resp = await agent_step(
             client=mock_client,  # type: ignore[arg-type]
             settings=settings,
-            budget=budget,
+            budget=_budget(settings),
             request=req,
             user_id="u-1",
         )
@@ -258,113 +216,136 @@ class TestAgentStepRouting:
         assert resp.routing_reason == "expert_budget_unavailable"
         settings.llm_expert_daily_user_limit = 20
 
-    async def test_replan_triggers_normal(
-        self, settings: Settings, budget: ExpertBudgetService
+    async def test_planner_stuck_expert_allowed(
+        self, settings: Settings
     ):
-        """A single replan should trigger normal tier."""
-        req = _make_request(
-            model_tier="fast",
-            reasoning_score=2,
-            replans=1,
-        )
-        from unittest.mock import AsyncMock
+        """Expert requested + planner stuck → allowed."""
+        req = _make_request(requested_tier="expert", failed_plans=2)
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
-            return_value=b'{"choices":[{"message":{"role":"assistant","content":"retrying"}}]}'
+            return_value=b'{"choices":[{"message":{"role":"assistant","content":"rescued"}}]}'
         )
 
         resp = await agent_step(
             client=mock_client,  # type: ignore[arg-type]
             settings=settings,
-            budget=budget,
-            request=req,
-            user_id="u-1",
-        )
-        assert resp.effective_model_tier == "normal"
-        assert resp.routing_reason == "moderate_reasoning"
-
-    async def test_normal_score_threshold_triggers_normal(
-        self, settings: Settings, budget: ExpertBudgetService
-    ):
-        """reasoning_score >= llm_normal_score_threshold triggers normal."""
-        settings.llm_normal_score_threshold = 4
-        req = _make_request(
-            model_tier="fast",
-            reasoning_score=5,
-        )
-        from unittest.mock import AsyncMock
-        mock_client = AsyncMock()
-        mock_client.post.return_value.status_code = 200
-        mock_client.post.return_value.aread = AsyncMock(
-            return_value=b'{"choices":[{"message":{"role":"assistant","content":"moderate"}}]}'
-        )
-
-        resp = await agent_step(
-            client=mock_client,  # type: ignore[arg-type]
-            settings=settings,
-            budget=budget,
-            request=req,
-            user_id="u-1",
-        )
-        assert resp.effective_model_tier == "normal"
-
-    async def test_cross_source_synthesis_with_score(
-        self, settings: Settings, budget: ExpertBudgetService
-    ):
-        """cross_source_synthesis with high score → expert."""
-        req = _make_request(
-            model_tier="normal",
-            reasoning_score=11,
-            hard_signals=["cross_source_synthesis"],
-        )
-        from unittest.mock import AsyncMock
-        mock_client = AsyncMock()
-        mock_client.post.return_value.status_code = 200
-        mock_client.post.return_value.aread = AsyncMock(
-            return_value=b'{"choices":[{"message":{"role":"assistant","content":"synthesized"}}]}'
-        )
-
-        resp = await agent_step(
-            client=mock_client,  # type: ignore[arg-type]
-            settings=settings,
-            budget=budget,
+            budget=_budget(settings),
             request=req,
             user_id="u-1",
         )
         assert resp.effective_model_tier == "expert"
+        assert resp.routing_reason == "planner_stuck"
+
+    async def test_result_has_tool_calls(self, settings: Settings):
+        """Verify tool_calls are converted to AgentResult."""
+        req = _make_request(requested_tier="normal")
+        mock_client = AsyncMock()
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.aread = AsyncMock(
+            return_value=(
+                b'{"choices":[{"message":{"role":"assistant","content":null,'
+                b'"tool_calls":[{"id":"call_1","function":{"name":"search",'
+                b'"arguments":"{\\"query\\":\\"Daniyar\\"}"}}]}}]}'
+            )
+        )
+
+        resp = await agent_step(
+            client=mock_client,  # type: ignore[arg-type]
+            settings=settings,
+            budget=_budget(settings),
+            request=req,
+            user_id="u-1",
+        )
+        assert resp.result.kind == "tool_calls"
+        assert resp.result.tool_calls is not None
+        assert resp.result.tool_calls[0].tool_name == "search"
+        assert resp.result.tool_calls[0].args == {"query": "Daniyar"}
+
+    async def test_result_final(self, settings: Settings):
+        """Verify text response is converted to AgentResult."""
+        req = _make_request(requested_tier="fast")
+        mock_client = AsyncMock()
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.aread = AsyncMock(
+            return_value=b'{"choices":[{"message":{"role":"assistant","content":"hello there"}}]}'
+        )
+
+        resp = await agent_step(
+            client=mock_client,  # type: ignore[arg-type]
+            settings=settings,
+            budget=_budget(settings),
+            request=req,
+            user_id="u-1",
+        )
+        assert resp.result.kind == "final"
+        assert resp.result.text == "hello there"
+
+    async def test_tool_converter_agent_to_openrouter(
+        self, settings: Settings
+    ):
+        """Verify frontend tools are converted to OpenRouter format."""
+        req = _make_request(
+            requested_tier="normal",
+            tools=[{
+                "name": "search_chats",
+                "description": "Search Telegram chats",
+                "inputSchema": {"type": "object", "properties": {}},
+            }],
+        )
+        mock_client = AsyncMock()
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.aread = AsyncMock(
+            return_value=b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+        )
+
+        resp = await agent_step(
+            client=mock_client,  # type: ignore[arg-type]
+            settings=settings,
+            budget=_budget(settings),
+            request=req,
+            user_id="u-1",
+        )
+
+        call_kwargs = mock_client.post.call_args
+        tools_sent = call_kwargs[1]["json"]["tools"]
+        assert len(tools_sent) == 1
+        assert tools_sent[0]["type"] == "function"
+        assert tools_sent[0]["function"]["name"] == "search_chats"
+
+        assert resp.effective_model_tier == "normal"
 
 
 class TestRoutingContextValidation:
 
     async def test_invalid_reasoning_score_rejected(
-        self, settings: Settings, budget: ExpertBudgetService
+        self, settings: Settings
     ):
         req = _make_request(reasoning_score=999)
         with pytest.raises(RoutingValidationError):
             await agent_step(
                 client=AsyncMock(),
                 settings=settings,
-                budget=budget,
+                budget=_budget(settings),
                 request=req,
                 user_id="u-1",
             )
 
     async def test_unknown_hard_signal_rejected(
-        self, settings: Settings, budget: ExpertBudgetService
+        self, settings: Settings
     ):
         req = _make_request(hard_signals=["made_up_signal"])
         with pytest.raises(RoutingValidationError):
             await agent_step(
                 client=AsyncMock(),
                 settings=settings,
-                budget=budget,
+                budget=_budget(settings),
                 request=req,
                 user_id="u-1",
             )
 
     async def test_negative_counters_rejected(
-        self, settings: Settings, budget: ExpertBudgetService
+        self, settings: Settings
     ):
         from app.llm.schemas import (
             AgentStepRequest,
@@ -375,6 +356,7 @@ class TestRoutingContextValidation:
         )
 
         ctx = RoutingContext(
+            requested_tier="fast",
             reasoning_score=0,
             hard_reasoning_signals=[],
             weak_signals=WeakExecutionSignals.model_construct(step_count=-1),
@@ -384,8 +366,7 @@ class TestRoutingContextValidation:
         req = AgentStepRequest.model_construct(
             request_id="req-1",
             run_id="run-1",
-            model_tier="fast",
-            routing_context=ctx,
+            routing=ctx,
             messages=[{"role": "user", "content": "hello"}],
             tools=[],
         )
@@ -393,7 +374,7 @@ class TestRoutingContextValidation:
             await agent_step(
                 client=AsyncMock(),
                 settings=settings,
-                budget=budget,
+                budget=_budget(settings),
                 request=req,
                 user_id="u-1",
             )

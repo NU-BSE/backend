@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from app.schemas.common import CamelModel
 
@@ -22,13 +22,13 @@ VALID_HARD_REASONING_SIGNALS: frozenset[str] = frozenset(
 )
 
 
-class WeakExecutionSignals(BaseModel):
+class WeakExecutionSignals(CamelModel):
     step_count: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
     connector_count: int = Field(default=0, ge=0)
 
 
-class StruggleSignals(BaseModel):
+class StruggleSignals(CamelModel):
     failed_plans: int = Field(default=0, ge=0)
     replans: int = Field(default=0, ge=0)
     repeated_tool_pattern: bool = False
@@ -36,12 +36,13 @@ class StruggleSignals(BaseModel):
     repeated_tool_failures: int = Field(default=0, ge=0)
 
 
-class ContextSignals(BaseModel):
+class ContextSignals(CamelModel):
     large_structured_context: bool = False
     large_unstructured_context: bool = False
 
 
-class RoutingContext(BaseModel):
+class RoutingContext(CamelModel):
+    requested_tier: ModelTier = "fast"
     reasoning_score: int = Field(default=0, ge=0)
     hard_reasoning_signals: list[str] = Field(default_factory=list)
     weak_signals: WeakExecutionSignals = Field(default_factory=WeakExecutionSignals)
@@ -50,7 +51,7 @@ class RoutingContext(BaseModel):
     escalation_count: int = Field(default=0, ge=0)
 
 
-class UsageInfo(BaseModel):
+class UsageInfo(CamelModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -59,10 +60,21 @@ class UsageInfo(BaseModel):
 class AgentStepRequest(CamelModel):
     request_id: str
     run_id: str
-    model_tier: ModelTier = "fast"
-    routing_context: RoutingContext = Field(default_factory=RoutingContext)
+    routing: RoutingContext = Field(default_factory=RoutingContext)
     messages: list[dict[str, Any]] = Field(default_factory=list)
     tools: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ToolCallResult(CamelModel):
+    id: str
+    tool_name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentResult(CamelModel):
+    kind: Literal["final", "tool_calls"]
+    text: str | None = None
+    tool_calls: list[ToolCallResult] | None = None
 
 
 class AgentStepResponse(CamelModel):
@@ -71,5 +83,5 @@ class AgentStepResponse(CamelModel):
     requested_model_tier: ModelTier
     effective_model_tier: ModelTier
     routing_reason: str
-    message: dict[str, Any]
+    result: AgentResult
     usage: UsageInfo | None = None

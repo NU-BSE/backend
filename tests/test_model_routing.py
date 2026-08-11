@@ -20,6 +20,7 @@ from app.llm.schemas import (
 
 
 def _ctx(
+    requested_tier: str = "fast",
     reasoning_score: int = 0,
     hard_signals: list[str] | None = None,
     failed_plans: int = 0,
@@ -32,6 +33,7 @@ def _ctx(
     escalation_count: int = 0,
 ) -> RoutingContext:
     return RoutingContext(
+        requested_tier=requested_tier,  # type: ignore[arg-type]
         reasoning_score=reasoning_score,
         hard_reasoning_signals=hard_signals or [],
         weak_signals=WeakExecutionSignals(
@@ -48,6 +50,21 @@ def _ctx(
         context=ContextSignals(),
         escalation_count=escalation_count,
     )
+
+
+def _settings(**kwargs) -> Settings:
+    defaults: dict[str, object] = {
+        "jwt_secret": "test-secret-" + "x" * 40,
+        "brevo_api_key": "test",
+        "email_from": "test@test.com",
+        "llm_allow_expert": True,
+        "llm_normal_score_threshold": 4,
+        "llm_expert_score_threshold": 10,
+        "llm_model_fast": "anthropic/claude-3-haiku",
+        "llm_model_normal": "anthropic/claude-3-sonnet",
+        "llm_model_expert": "openai/gpt-4o",
+    }
+    return Settings(_env_file=None, **defaults, **kwargs)  # type: ignore[arg-type]
 
 
 class TestHasEmergencyExpertTrigger:
@@ -98,158 +115,112 @@ class TestHasHardReasoningSignal:
 
 class TestSelectEffectiveTier:
 
-    def _settings(self, **kwargs) -> Settings:
-        defaults: dict[str, object] = {
-            "jwt_secret": "test-secret-" + "x" * 40,
-            "brevo_api_key": "test",
-            "email_from": "test@test.com",
-            "llm_allow_expert": True,
-            "llm_normal_score_threshold": 4,
-            "llm_expert_score_threshold": 10,
-            "llm_model_fast": "anthropic/claude-3-haiku",
-            "llm_model_normal": "anthropic/claude-3-sonnet",
-            "llm_model_expert": "openai/gpt-4o",
-        }
-        return Settings(_env_file=None, **defaults, **kwargs)  # type: ignore[arg-type]
-
-    def _select(
-        self, requested_tier, ctx, settings=None, *, expert_budget_ok=True, expert_disabled=None
-    ):
-        s = settings or self._settings()
+    def _select(self, ctx, settings=None, *, expert_budget_ok=True, expert_disabled=None):
+        s = settings or _settings()
         return select_effective_tier(
-            requested_tier,
             ctx,
             s,
             expert_budget_ok=expert_budget_ok,
             expert_disabled=expert_disabled,
         )
 
-    def test_easy_long_task_never_expert(self):
-        """High tool count, low reasoning → fast or normal, never expert."""
-        ctx = _ctx(reasoning_score=2, tool_calls=8, connector_count=2)
-        tier, _reason = self._select("fast", ctx)
-        assert tier in ("fast", "normal")
-        assert tier != "expert"
-
-    def test_hard_short_task_expert(self):
-        """High reasoning score + hard signals → expert."""
-        ctx = _ctx(
-            reasoning_score=12,
-            hard_signals=["constraint_solving", "ranking_or_optimization"],
-            tool_calls=2,
-        )
-        tier, reason = self._select("normal", ctx)
-        assert tier == "expert"
-        assert reason == "hard_reasoning"
-
-    def test_cross_connector_sequential_not_expert(self):
-        """Multiple connectors but no hard reasoning → not expert."""
-        ctx = _ctx(reasoning_score=3, connector_count=2)
-        tier, _reason = self._select("fast", ctx)
-        assert tier != "expert"
-
-    def test_cross_source_synthesis_with_score_expert(self):
-        ctx = _ctx(
-            reasoning_score=11,
-            hard_signals=["cross_source_synthesis"],
-        )
-        tier, _reason = self._select("normal", ctx)
-        assert tier == "expert"
-
-    def test_cross_source_synthesis_low_score_normal(self):
-        ctx = _ctx(
-            reasoning_score=5,
-            hard_signals=["cross_source_synthesis"],
-        )
-        tier, _reason = self._select("fast", ctx)
-        assert tier in ("normal", "fast")
-        assert tier != "expert"
-
-    def test_client_asks_expert_no_evidence_downgraded(self):
-        ctx = _ctx(reasoning_score=2)
-        tier, _reason = self._select("expert", ctx)
-        assert tier != "expert"
-
-    def test_planner_stuck_expert(self):
-        ctx = _ctx(failed_plans=2)
-        tier, reason = self._select("normal", ctx)
-        assert tier == "expert"
-        assert reason == "planner_stuck"
-
-    def test_loop_expert(self):
-        ctx = _ctx(repeated_tool_pattern=True)
-        tier, reason = self._select("normal", ctx)
-        assert tier == "expert"
-        assert reason == "planner_stuck"
-
-    def test_expert_disabled_fallback(self):
-        ctx = _ctx(
-            reasoning_score=15,
-            hard_signals=["constraint_solving"],
-        )
-        tier, reason = self._select("expert", ctx, expert_disabled=True)
-        assert tier == "normal"
-        assert reason == "expert_disabled"
-
-    def test_expert_budget_denied_fallback(self):
-        ctx = _ctx(
-            reasoning_score=15,
-            hard_signals=["constraint_solving"],
-        )
-        tier, reason = self._select("expert", ctx, expert_budget_ok=False)
-        assert tier == "normal"
-        assert reason == "expert_budget_unavailable"
-
-    def test_replan_one_triggers_normal(self):
-        ctx = _ctx(reasoning_score=2, replans=1)
-        tier, reason = self._select("fast", ctx)
-        assert tier == "normal"
-        assert reason == "moderate_reasoning"
-
-    def test_requested_normal_stays_normal(self):
-        ctx = _ctx(reasoning_score=3)
-        tier, _reason = self._select("normal", ctx)
-        assert tier == "normal"
-
-    def test_default_fast(self):
-        ctx = _ctx(reasoning_score=0)
-        tier, reason = self._select("fast", ctx)
+    def test_fast_request_stays_fast(self):
+        """Fast requested + no hard signals → fast (backend never upgrades)."""
+        ctx = _ctx(requested_tier="fast", reasoning_score=2, tool_calls=8)
+        tier, reason = self._select(ctx)
         assert tier == "fast"
         assert reason == "default_fast"
 
-    def test_expert_justified_emergency_trumps_budget(
-        self,
-    ):
-        """Emergency expert should still return normal when budget denied."""
-        ctx = _ctx(failed_plans=3)
-        tier, reason = self._select("normal", ctx, expert_budget_ok=False)
+    def test_fast_request_stays_fast_even_with_high_score(self):
+        """Fast requested but high score → still fast (backend never upgrades)."""
+        ctx = _ctx(
+            requested_tier="fast",
+            reasoning_score=12,
+            hard_signals=["constraint_solving"],
+        )
+        tier, reason = self._select(ctx)
+        assert tier == "fast"
+        assert reason == "default_fast"
+
+    def test_fast_request_stays_fast_even_with_planner_stuck(self):
+        """Even planner stuck with fast request → stays fast (frontend owns routing)."""
+        ctx = _ctx(requested_tier="fast", failed_plans=3)
+        tier, _reason = self._select(ctx)
+        assert tier == "fast"
+
+    def test_normal_request_stays_normal(self):
+        ctx = _ctx(requested_tier="normal", reasoning_score=3)
+        tier, reason = self._select(ctx)
+        assert tier == "normal"
+        assert reason == "moderate_reasoning"
+
+    def test_expert_request_with_hard_reasoning_gets_expert(self):
+        """Expert requested + hard signals + high score → expert allowed."""
+        ctx = _ctx(
+            requested_tier="expert",
+            reasoning_score=12,
+            hard_signals=["constraint_solving", "ranking_or_optimization"],
+        )
+        tier, reason = self._select(ctx)
+        assert tier == "expert"
+        assert reason == "hard_reasoning"
+
+    def test_expert_request_without_evidence_downgraded(self):
+        """Expert requested but no evidence → downgrade to normal."""
+        ctx = _ctx(requested_tier="expert", reasoning_score=2)
+        tier, reason = self._select(ctx)
+        assert tier == "normal"
+        assert reason == "expert_not_justified"
+
+    def test_expert_request_with_planner_stuck_gets_expert(self):
+        """Expert requested + emergency trigger → expert allowed."""
+        ctx = _ctx(requested_tier="expert", failed_plans=2)
+        tier, reason = self._select(ctx)
+        assert tier == "expert"
+        assert reason == "planner_stuck"
+
+    def test_expert_disabled_downgrades(self):
+        ctx = _ctx(
+            requested_tier="expert",
+            reasoning_score=15,
+            hard_signals=["constraint_solving"],
+        )
+        tier, reason = self._select(ctx, expert_disabled=True)
+        assert tier == "normal"
+        assert reason == "expert_disabled"
+
+    def test_expert_budget_denied_downgrades(self):
+        ctx = _ctx(
+            requested_tier="expert",
+            reasoning_score=15,
+            hard_signals=["constraint_solving"],
+        )
+        tier, reason = self._select(ctx, expert_budget_ok=False)
         assert tier == "normal"
         assert reason == "expert_budget_unavailable"
 
-    def test_weak_signals_do_not_produce_expert(self):
-        """High tool/connector counts without hard signals stay below expert."""
-        ctx = _ctx(reasoning_score=3, tool_calls=10, connector_count=5)
-        tier, _reason = self._select("fast", ctx)
-        assert tier != "expert"
-
-    def test_malicious_score_100_no_signal_downgraded(self):
-        """Score 100 but no hard reasoning signal → not expert."""
-        ctx = _ctx(reasoning_score=100)
-        tier, _reason = self._select("expert", ctx)
-        assert tier != "expert"
-
-    def test_normal_score_threshold_without_request(self):
-        """Score at normal threshold should promote fast to normal."""
-        ctx = _ctx(reasoning_score=4)
-        tier, reason = self._select("fast", ctx)
+    def test_normal_with_high_score_stays_normal(self):
+        """Normal request with expert-level score stays normal (never upgrades)."""
+        ctx = _ctx(
+            requested_tier="normal",
+            reasoning_score=15,
+            hard_signals=["constraint_solving"],
+        )
+        tier, _reason = self._select(ctx)
         assert tier == "normal"
-        assert reason == "moderate_reasoning"
+
+    def test_malicious_expert_score_100_no_signal_downgraded(self):
+        """Score 100 but no hard reasoning signal → downgraded."""
+        ctx = _ctx(requested_tier="expert", reasoning_score=100)
+        tier, reason = self._select(ctx)
+        assert tier == "normal"
+        assert reason == "expert_not_justified"
 
 
 class TestValidateRoutingContext:
 
     def test_valid_context(self):
-        ctx = _ctx(reasoning_score=50, hard_signals=["constraint_solving"])
+        ctx = _ctx(requested_tier="normal", reasoning_score=50, hard_signals=["constraint_solving"])
         validate_routing_context(ctx)
 
     def test_score_too_high(self):
@@ -258,7 +229,6 @@ class TestValidateRoutingContext:
             validate_routing_context(ctx)
 
     def test_score_negative(self):
-
         ctx = RoutingContext.model_construct(reasoning_score=-1)
         with pytest.raises(RoutingValidationError):
             validate_routing_context(ctx)
@@ -274,6 +244,11 @@ class TestValidateRoutingContext:
 
     def test_tool_calls_out_of_range(self):
         ctx = _ctx(tool_calls=1001)
+        with pytest.raises(RoutingValidationError):
+            validate_routing_context(ctx)
+
+    def test_unknown_tier_rejected(self):
+        ctx = RoutingContext.model_construct(requested_tier="invalid_tier")  # type: ignore[arg-type]
         with pytest.raises(RoutingValidationError):
             validate_routing_context(ctx)
 

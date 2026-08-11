@@ -29,45 +29,43 @@ def has_hard_reasoning_signal(ctx: RoutingContext) -> bool:
     return bool(ctx.hard_reasoning_signals)
 
 
-def _expert_by_reasoning(ctx: RoutingContext, settings: Settings) -> bool:
+def _expert_justified(ctx: RoutingContext, settings: Settings) -> bool:
     return (
         ctx.reasoning_score >= settings.llm_expert_score_threshold
         and has_hard_reasoning_signal(ctx)
-    )
+    ) or has_emergency_expert_trigger(ctx)
 
 
 def select_effective_tier(
-    requested_tier: ModelTier,
     ctx: RoutingContext,
     settings: Settings,
     *,
     expert_budget_ok: bool = True,
     expert_disabled: bool | None = None,
 ) -> tuple[ModelTier, str]:
+    """Backend may only downgrade from requested_tier, never upgrade.
+
+    Frontend owns the routing decision. Backend enforces cost/safety gates.
+    """
+    requested = ctx.requested_tier
     _expert_disabled = (
         expert_disabled if expert_disabled is not None else not settings.llm_allow_expert
     )
 
-    emergency = has_emergency_expert_trigger(ctx)
-    expert_by_reasoning = _expert_by_reasoning(ctx, settings)
+    if requested == "expert":
+        if _expert_disabled:
+            return ("normal", "expert_disabled")
 
-    expert_justified = emergency or expert_by_reasoning
+        if not expert_budget_ok:
+            return ("normal", "expert_budget_unavailable")
 
-    if expert_justified and not _expert_disabled and expert_budget_ok:
-        reason = "planner_stuck" if emergency else "hard_reasoning"
-        return ("expert", reason)
+        if _expert_justified(ctx, settings):
+            emergency = has_emergency_expert_trigger(ctx)
+            return ("expert", "planner_stuck" if emergency else "hard_reasoning")
 
-    if expert_justified and (_expert_disabled or not expert_budget_ok):
-        reason = "expert_disabled" if _expert_disabled else "expert_budget_unavailable"
-        return ("normal", reason)
+        return ("normal", "expert_not_justified")
 
-    normal_triggers = (
-        requested_tier in ("normal", "expert")
-        or ctx.reasoning_score >= settings.llm_normal_score_threshold
-        or ctx.struggle.replans >= 1
-    )
-
-    if normal_triggers:
+    if requested == "normal":
         return ("normal", "moderate_reasoning")
 
     return ("fast", "default_fast")
@@ -95,6 +93,9 @@ def get_model_alias(tier: ModelTier) -> str:
 
 def validate_routing_context(ctx: RoutingContext) -> None:
     from app.llm.errors import RoutingValidationError
+
+    if ctx.requested_tier not in ("fast", "normal", "expert"):
+        raise RoutingValidationError(f"unknown model tier: {ctx.requested_tier}")
 
     if not (0 <= ctx.reasoning_score <= 100):
         raise RoutingValidationError(
