@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -28,6 +30,86 @@ from app.llm.schemas import (
 
 logger = logging.getLogger("app.llm.gateway")
 
+# OpenAI function names allow only [a-zA-Z0-9_-] and at most 64 characters.
+# Canonical MCP tool names (e.g. `telegram.user.search_chats`) use dotted
+# namespaces, so they must be mapped to provider-safe aliases at the backend
+# boundary — without renaming the tools the frontend's local MCP executor
+# understands.
+_PROVIDER_NAME_MAX = 64
+_DEFAULT_HASH_LEN = 10
+_UNSAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
+_SAFE_FULL_RE = re.compile(r"[a-zA-Z0-9_-]+")
+
+
+def _provider_name(canonical: str, hash_len: int) -> str:
+    safe_prefix = _UNSAFE_NAME_RE.sub("_", canonical) or "tool"
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:hash_len]
+    max_prefix = _PROVIDER_NAME_MAX - hash_len - 1
+    return f"{safe_prefix[:max_prefix]}_{digest}"
+
+
+def provider_safe_name(canonical: str) -> str:
+    """Map a canonical MCP tool name to a provider-safe OpenAI function name.
+
+    Guarantees `^[a-zA-Z0-9_-]+$` and ``<= 64`` chars. Already-compliant short
+    names are returned unchanged (so existing simple tools keep their
+    identity); everything else is a sanitized readable prefix plus a
+    deterministic short hash of the *original* name, which makes the mapping
+    collision-safe (``a.b`` and ``a_b`` never map to the same alias).
+    """
+    if not canonical:
+        return "tool"
+
+    if (
+        len(canonical) <= _PROVIDER_NAME_MAX
+        and _SAFE_FULL_RE.fullmatch(canonical)
+    ):
+        return canonical
+
+    return _provider_name(canonical, _DEFAULT_HASH_LEN)
+
+
+def build_tool_name_maps(
+    tools: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build canonical<->provider name maps from the request's tool list.
+
+    Returns ``(canonical_to_provider, provider_to_canonical)``. Collision-safe:
+    if two distinct canonical names would ever produce the same alias, the
+    digest is extended until the alias is unique.
+    """
+    canonical_to_provider: dict[str, str] = {}
+    provider_to_canonical: dict[str, str] = {}
+
+    for tool in tools:
+        canonical = tool.get("name", "")
+        if not canonical or canonical in canonical_to_provider:
+            continue
+
+        if (
+            len(canonical) <= _PROVIDER_NAME_MAX
+            and _SAFE_FULL_RE.fullmatch(canonical)
+            and canonical not in provider_to_canonical
+        ):
+            provider = canonical
+        else:
+            hash_len = _DEFAULT_HASH_LEN
+            while True:
+                provider = _provider_name(canonical, hash_len)
+                if provider not in provider_to_canonical:
+                    break
+                hash_len += 4
+
+        canonical_to_provider[canonical] = provider
+        provider_to_canonical[provider] = canonical
+
+    return canonical_to_provider, provider_to_canonical
+
+
+def _to_provider(name: str, canonical_to_provider: dict[str, str]) -> str:
+    mapped = canonical_to_provider.get(name)
+    return mapped if mapped is not None else provider_safe_name(name)
+
 
 def _make_usage_info(raw: dict[str, Any]) -> UsageInfo:
     return UsageInfo(
@@ -37,13 +119,17 @@ def _make_usage_info(raw: dict[str, Any]) -> UsageInfo:
     )
 
 
-def to_openrouter_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def to_openrouter_tools(
+    tools: list[dict[str, Any]],
+    canonical_to_provider: dict[str, str],
+) -> list[dict[str, Any]]:
     converted: list[dict[str, Any]] = []
     for tool in tools:
+        name = tool.get("name", "")
         converted.append({
             "type": "function",
             "function": {
-                "name": tool.get("name", ""),
+                "name": _to_provider(name, canonical_to_provider),
                 "description": tool.get("description", ""),
                 "parameters": tool.get("inputSchema", tool.get("input_schema", {})),
             },
@@ -53,6 +139,7 @@ def to_openrouter_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def to_openrouter_messages(
     messages: list[dict[str, Any]],
+    canonical_to_provider: dict[str, str],
 ) -> list[dict[str, Any]]:
     converted: list[dict[str, Any]] = []
 
@@ -78,7 +165,7 @@ def to_openrouter_messages(
                             "id": call["id"],
                             "type": "function",
                             "function": {
-                                "name": call["toolName"],
+                                "name": _to_provider(call["toolName"], canonical_to_provider),
                                 "arguments": json.dumps(
                                     call.get("args", {}),
                                     ensure_ascii=False,
@@ -148,7 +235,10 @@ Connected accounts:
     }
 
 
-def openrouter_message_to_result(message: dict[str, Any]) -> AgentResult:
+def openrouter_message_to_result(
+    message: dict[str, Any],
+    provider_to_canonical: dict[str, str],
+) -> AgentResult:
     tool_calls = message.get("tool_calls")
     if isinstance(tool_calls, list) and tool_calls:
         items: list[ToolCallResult] = []
@@ -162,10 +252,20 @@ def openrouter_message_to_result(message: dict[str, Any]) -> AgentResult:
                     args = json.loads(func["arguments"])
                 except (json.JSONDecodeError, TypeError):
                     args = {}
+            provider_name = func.get("name", "") if func else ""
+            canonical = provider_to_canonical.get(provider_name)
+            if canonical is None:
+                # Fail closed: a provider-invented tool name must never reach
+                # the frontend as if it were a real MCP tool.
+                raise LLMError(
+                    f"Provider returned an unknown tool name: {provider_name!r}",
+                    code="TOOL_VALIDATION_ERROR",
+                    retryable=False,
+                )
             items.append(
                 ToolCallResult(
                     id=tc.get("id", ""),
-                    tool_name=func.get("name", "") if func else "",
+                    tool_name=canonical,
                     args=args,
                 )
             )
@@ -204,6 +304,10 @@ async def agent_step(
     current_tier: ModelTier = effective_tier
     current_reason = reason
 
+    canonical_to_provider, provider_to_canonical = build_tool_name_maps(
+        request.tools
+    )
+
     while True:
         model_id = get_model_id(current_tier, settings)
         if not model_id:
@@ -213,14 +317,14 @@ async def agent_step(
             started = time.perf_counter()
 
             openrouter_tools = (
-                to_openrouter_tools(request.tools)
+                to_openrouter_tools(request.tools, canonical_to_provider)
                 if request.tools
                 else None
             )
 
             openrouter_messages = [
                 build_agent_system_message(request.connections),
-                *to_openrouter_messages(request.messages),
+                *to_openrouter_messages(request.messages, canonical_to_provider),
             ]
 
             completion = await openrouter_chat_completion(
@@ -235,7 +339,7 @@ async def agent_step(
             message = extract_message(completion)
             usage_raw = extract_usage(completion)
             usage_info = _make_usage_info(usage_raw)
-            result = openrouter_message_to_result(message)
+            result = openrouter_message_to_result(message, provider_to_canonical)
 
             logger.info(
                 "agent step completed user=%s run=%s tier=%s model=%s latency_ms=%s",

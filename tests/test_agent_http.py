@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.api.deps import get_http_client
+from app.llm.gateway import provider_safe_name
 from tests.conftest import CapturingEmailSender, register_user
 
 
@@ -18,27 +19,11 @@ class _FakeOpenRouterTransport(httpx.AsyncBaseTransport):
 
 
 class _MultiStepOpenRouterTransport(httpx.AsyncBaseTransport):
-    """Returns tool_calls on first call, final text on subsequent calls."""
+    """Returns tool_calls on first call, final text on subsequent calls.
 
-    TOOL_CALLS_RESPONSE = json.dumps({
-        "choices": [{
-            "message": {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": "call_tg_1",
-                    "type": "function",
-                    "function": {
-                        "name": "telegram.user.search_chats",
-                        "arguments": (
-                            '{"connectionId": "telegram-user-1", '
-                            + '"query": "\\u0414\\u0430\\u043d\\u0438\\u044f\\u0440"}'
-                        ),
-                    },
-                }],
-            },
-        }],
-    }).encode()
+    On the first call it echoes back the provider-safe alias it was sent, so
+    the test verifies the full canonical -> alias -> canonical round-trip.
+    """
 
     FINAL_RESPONSE = (
         b'{"choices":[{"message":{"role":"assistant","content":"\\u041d\\u0435 \\u043d\\u0430\\u0448\\u0451\\u043b '  # noqa: E501
@@ -50,15 +35,37 @@ class _MultiStepOpenRouterTransport(httpx.AsyncBaseTransport):
         super().__init__()
         self.call_count = 0
         self.captured_messages: list[dict] = []
+        self.captured_tools: list[dict] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.call_count += 1
         body_bytes = request.read()
         request_body = json.loads(body_bytes)
         self.captured_messages = request_body.get("messages", [])
+        self.captured_tools = request_body.get("tools", [])
 
         if self.call_count == 1:
-            return httpx.Response(200, content=self.TOOL_CALLS_RESPONSE, request=request)
+            provider_name = self.captured_tools[0]["function"]["name"]
+            tool_calls_response = json.dumps({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_tg_1",
+                            "type": "function",
+                            "function": {
+                                "name": provider_name,
+                                "arguments": (
+                                    '{"connectionId": "telegram-user-1", '
+                                    + '"query": "\\u0414\\u0430\\u043d\\u0438\\u044f\\u0440"}'
+                                ),
+                            },
+                        }],
+                    },
+                }],
+            }).encode()
+            return httpx.Response(200, content=tool_calls_response, request=request)
         return httpx.Response(200, content=self.FINAL_RESPONSE, request=request)
 
 
@@ -357,7 +364,8 @@ class TestMultiStepConversation:
             assert s2["result"]["kind"] == "final"
             assert s2["result"]["text"] is not None
 
-            # Assistant message has tool_calls in OpenRouter format.
+            # Assistant message has tool_calls in OpenRouter format, using the
+            # provider-safe alias (no dots), not the canonical MCP name.
             assistant_msgs = [m for m in transport.captured_messages if m["role"] == "assistant"]
             assert len(assistant_msgs) >= 1
             assert "tool_calls" in assistant_msgs[0]
@@ -365,7 +373,8 @@ class TestMultiStepConversation:
             assert len(tc) == 1
             assert tc[0]["id"] == "call_tg_1"
             assert tc[0]["type"] == "function"
-            assert tc[0]["function"]["name"] == "telegram.user.search_chats"
+            assert tc[0]["function"]["name"] == provider_safe_name("telegram.user.search_chats")
+            assert "." not in tc[0]["function"]["name"]
 
             # Tool message has tool_call_id matching.
             tool_msgs = [m for m in transport.captured_messages if m["role"] == "tool"]

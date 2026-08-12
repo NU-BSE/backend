@@ -239,7 +239,14 @@ class TestAgentStepRouting:
 
     async def test_result_has_tool_calls(self, settings: Settings):
         """Verify tool_calls are converted to AgentResult."""
-        req = _make_request(requested_tier="normal")
+        req = _make_request(
+            requested_tier="normal",
+            tools=[{
+                "name": "search",
+                "description": "Search contacts",
+                "inputSchema": {"type": "object", "properties": {}},
+            }],
+        )
         mock_client = AsyncMock()
         mock_client.post.return_value.status_code = 200
         mock_client.post.return_value.aread = AsyncMock(
