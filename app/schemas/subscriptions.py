@@ -58,3 +58,22 @@ class GrantRequest(CamelModel):
 class GrantResponse(CamelModel):
     subscription: SubscriptionResponse
     entitlements: EntitlementsResponse
+
+
+class PlayVerifyRequest(CamelModel):
+    """What the app knows after Play reports a successful purchase.
+
+    Only `purchase_token` is trusted. The other two are carried for logging and
+    for the acknowledge call, and are checked against what Google reports
+    rather than believed: a client that could name its own product and base
+    plan could name the cheapest one and be given the dearest.
+    """
+
+    purchase_token: str = Field(min_length=1, max_length=2048)
+    product_id: str | None = Field(default=None, max_length=255)
+    base_plan_id: str | None = Field(default=None, max_length=255)
+
+
+class PlayVerifyResponse(CamelModel):
+    subscription: SubscriptionResponse
+    entitlements: EntitlementsResponse

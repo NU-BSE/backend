@@ -20,7 +20,10 @@ redis>=6,<9
 httpx>=0.28,<1
 
 # JWT
-PyJWT>=2.10,<3
+# [crypto] pulls in `cryptography`, which PyJWT needs for RS256. Google
+# Play service-account assertions are RS256-signed; without it, token
+# exchange fails at runtime with NotImplementedError rather than at import.
+PyJWT[crypto]>=2.10,<3
 
 # Serialization
 orjson>=3.10,<4

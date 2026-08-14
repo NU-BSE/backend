@@ -46,6 +46,29 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=120.0, ge=5, le=600)
     llm_mock: bool = False
 
+    # Google Play Billing.
+    #
+    # The service account must have "View financial data" on the Play Console
+    # and be linked to the app. Either point at a mounted key file or paste the
+    # JSON; the file is preferred so the key never lands in `docker inspect`.
+    play_package_name: str = "im.creepy.app"
+    play_service_account_file: str = ""
+    play_service_account_json: str = ""
+    play_api_timeout_seconds: float = Field(default=20.0, ge=1, le=120)
+    # Shared secret for the RTDN push endpoint. Pub/Sub cannot be trusted by
+    # source IP, so an unauthenticated webhook lets anyone forge a renewal.
+    play_rtdn_secret: str = ""
+    # Refuse purchases whose token was already redeemed by a different user.
+    # Only relevant if you ever disable it: a purchase token is bearer proof of
+    # payment, so a leaked one would otherwise entitle whoever presents it.
+    play_verify_enabled: bool = True
+
+    # On-device model weights served to paying clients.
+    model_artifact_root: str = "app/models"
+    # Entitlement required to download weights. Empty disables the gate, which
+    # is only appropriate in development.
+    model_download_requires_entitlement: bool = True
+
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == "production"
