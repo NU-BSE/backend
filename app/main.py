@@ -9,7 +9,16 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routes import admin, agent, auth, chat, health, subscriptions, users
+from app.api.routes import (
+    admin,
+    agent,
+    auth,
+    chat,
+    health,
+    models,
+    subscriptions,
+    users,
+)
 from app.core.config import Settings, get_settings
 from app.core.errors import (
     ApiError,
@@ -24,6 +33,8 @@ from app.db.session import create_engine_and_session_factory
 from app.kv.store import MemoryTTLStore, RedisTTLStore, TTLStore
 from app.services.email_codes import EmailCodeService
 from app.services.email_sender import EmailSender
+from app.services.model_catalog import ModelCatalog
+from app.services.play_billing import PlayClient
 from app.services.usage import UsageMeter
 
 logger = logging.getLogger("app")
@@ -65,6 +76,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.email_code_service = EmailCodeService(store, settings)
         app.state.email_sender = EmailSender(http_client, settings)
         app.state.usage_meter = UsageMeter(store)
+        app.state.play_client = PlayClient(settings, http_client)
+        app.state.model_catalog = ModelCatalog(settings)
 
         logger.info("%s started (env=%s)", settings.app_name, settings.app_env)
         try:
@@ -107,6 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(subscriptions.router)
     app.include_router(admin.router)
     app.include_router(chat.router)
+    app.include_router(models.router)
     app.include_router(agent.router)
 
 

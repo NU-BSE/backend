@@ -32,7 +32,7 @@ async def chat_http(
     usage_meter: UsageMeter = request.app.state.usage_meter
     client: httpx.AsyncClient = request.app.state.http_client
 
-    effective = await entitlements.sync_for_user(db, user.user_id)
+    effective = await entitlements.sync_for_user(db, user.user_id, settings)
 
     if not effective.agent_access:
         raise ApiError(

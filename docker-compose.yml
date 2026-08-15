@@ -44,6 +44,98 @@ services:
       redis:
         condition: service_healthy
 
+  # --- Cloud agent on llama.cpp -------------------------------------------
+  #
+  # An alternative to OpenRouter for LLM_UPSTREAM_URL: the same OpenAI-shaped
+  # /v1/chat/completions contract, served locally from the GUI-Owl teacher with
+  # the trained chat adapter merged in. Both llama services sit behind compose
+  # profiles and are off by default, so `docker compose up` stays a Postgres,
+  # Redis and API stack.
+  #
+  # Start them with scripts/llama_up.sh, which picks gpu or cpu by probing the
+  # host. Compose cannot do that itself — a GPU reservation is a hard error on
+  # a machine without one, so the choice has to be made before compose runs.
+
+  # One-shot: downloads the base model, converts it, merges the chat adapter
+  # and quantizes. Skips everything it has already done, so it is cheap on
+  # every start after the first.
+  llama-convert:
+    image: ${LLAMA_CONVERT_IMAGE:-ghcr.io/ggml-org/llama.cpp:full}
+    profiles: ["llama-gpu", "llama-cpu"]
+    entrypoint: ["/bin/bash", "/opt/creepy/convert.sh"]
+    environment:
+      LLAMA_BASE_REPO: ${LLAMA_BASE_REPO:-mPLUG/GUI-Owl-1.5-2B-Instruct}
+      LLAMA_MODEL_DIR: /models
+      LLAMA_ADAPTER_DIR: /adapter
+      LLAMA_QUANT: ${LLAMA_QUANT:-Q4_K_M}
+      LLAMA_KEEP_INTERMEDIATES: ${LLAMA_KEEP_INTERMEDIATES:-0}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - llama_models:/models
+      - ./docker/llama:/opt/creepy:ro
+      # The trained chat adapter, read-only. Override with LLAMA_ADAPTER_PATH
+      # if the android repo is not checked out beside this one.
+      - ${LLAMA_ADAPTER_PATH:-../android/artifacts/adapters/chat}:/adapter:ro
+
+  llama-gpu:
+    image: ${LLAMA_SERVER_GPU_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
+    profiles: ["llama-gpu"]
+    entrypoint: ["/bin/bash", "/opt/creepy/serve.sh"]
+    environment:
+      LLAMA_MODEL_DIR: /models
+      LLAMA_QUANT: ${LLAMA_QUANT:-Q4_K_M}
+      LLAMA_CTX_SIZE: ${LLAMA_CTX_SIZE:-8192}
+      LLAMA_GPU_LAYERS: ${LLAMA_GPU_LAYERS:-999}
+    volumes:
+      - llama_models:/models
+      - ./docker/llama:/opt/creepy:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      llama-convert:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      # Generous: a cold start loads several GB from the volume.
+      retries: 60
+      start_period: 60s
+
+  llama-cpu:
+    image: ${LLAMA_SERVER_CPU_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    profiles: ["llama-cpu"]
+    entrypoint: ["/bin/bash", "/opt/creepy/serve.sh"]
+    environment:
+      LLAMA_MODEL_DIR: /models
+      LLAMA_QUANT: ${LLAMA_QUANT:-Q4_K_M}
+      LLAMA_CTX_SIZE: ${LLAMA_CTX_SIZE:-8192}
+      LLAMA_THREADS: ${LLAMA_THREADS:-}
+    volumes:
+      - llama_models:/models
+      - ./docker/llama:/opt/creepy:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      llama-convert:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+
 volumes:
   postgres_data:
   redis_data:
+  # Converted GGUF weights. Named so `docker compose down` does not throw away
+  # a multi-gigabyte conversion.
+  llama_models:

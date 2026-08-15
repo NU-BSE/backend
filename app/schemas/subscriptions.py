@@ -32,6 +32,14 @@ class EntitlementsResponse(CamelModel):
     plan_code: str | None
     subscription_status: str | None
     current_period_end: datetime | None
+    # Whether this account has to buy anything to use the product. The app
+    # skips the paywall when this is false, which keeps the list of exempt
+    # accounts entirely server-side — the client never learns who is exempt or
+    # why, only that this caller is.
+    #
+    # Defaulted to True so that an older server, or any response that omits it,
+    # is read as "payment required". A bypass must never be the fallback.
+    subscription_required: bool = True
 
 
 class SubscriptionResponse(CamelModel):
@@ -56,5 +64,24 @@ class GrantRequest(CamelModel):
 
 
 class GrantResponse(CamelModel):
+    subscription: SubscriptionResponse
+    entitlements: EntitlementsResponse
+
+
+class PlayVerifyRequest(CamelModel):
+    """What the app knows after Play reports a successful purchase.
+
+    Only `purchase_token` is trusted. The other two are carried for logging and
+    for the acknowledge call, and are checked against what Google reports
+    rather than believed: a client that could name its own product and base
+    plan could name the cheapest one and be given the dearest.
+    """
+
+    purchase_token: str = Field(min_length=1, max_length=2048)
+    product_id: str | None = Field(default=None, max_length=255)
+    base_plan_id: str | None = Field(default=None, max_length=255)
+
+
+class PlayVerifyResponse(CamelModel):
     subscription: SubscriptionResponse
     entitlements: EntitlementsResponse
