@@ -49,14 +49,30 @@ class Settings(BaseSettings):
     email_code_max_per_ip_per_hour: int = Field(default=20, ge=1, le=1000)
     email_code_max_verify_attempts: int = Field(default=5, ge=1, le=20)
 
-    brevo_api_key: str
-    email_from: str
+    brevo_api_key: str = ""
+    email_from: str = ""
 
     llm_upstream_url: str = ""
     llm_upstream_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
     llm_timeout_seconds: float = Field(default=120.0, ge=5, le=600)
     llm_mock: bool = False
+
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
+    llm_model_fast: str = ""
+    llm_model_normal: str = ""
+    llm_model_expert: str = ""
+
+    llm_normal_score_threshold: int = Field(default=4, ge=0, le=100)
+    llm_expert_score_threshold: int = Field(default=10, ge=0, le=100)
+    llm_allow_expert: bool = True
+    llm_expert_daily_user_limit: int = Field(default=20, ge=0)
+    llm_expert_global_daily_budget_usd: float | None = None
+    llm_expert_max_calls_per_run: int = Field(default=3, ge=1)
+    llm_request_timeout_seconds: float = Field(default=60.0, ge=5, le=600)
+    llm_max_retries: int = Field(default=1, ge=0, le=3)
 
     # Google Play Billing.
     #
@@ -111,6 +127,14 @@ class Settings(BaseSettings):
                 missing.append("LLM_UPSTREAM_URL")
             if not self.cors_origins:
                 missing.append("CORS_ORIGINS")
+            if not self.openrouter_api_key:
+                missing.append("OPENROUTER_API_KEY")
+            if not self.llm_model_fast:
+                missing.append("LLM_MODEL_FAST")
+            if not self.llm_model_normal:
+                missing.append("LLM_MODEL_NORMAL")
+            if not self.llm_model_expert:
+                missing.append("LLM_MODEL_EXPERT")
             if missing:
                 raise ValueError(f"Missing production settings: {', '.join(missing)}")
         return self
