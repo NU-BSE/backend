@@ -45,10 +45,11 @@ async def list_plans(db: AsyncSession = Depends(get_db)) -> PlansResponse:
 
 @router.get("/me", response_model=MySubscriptionResponse)
 async def my_subscription(
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> MySubscriptionResponse:
-    effective = await entitlements.sync_for_user(db, user.user_id)
+    effective = await entitlements.sync_for_user(db, user.user_id, request.app.state.settings)
     subscription = await repo.get_active_subscription(db, user.user_id)
     return MySubscriptionResponse(
         subscription=subscription_to_response(subscription) if subscription else None,
@@ -59,6 +60,7 @@ async def my_subscription(
             plan_code=effective.plan_code,
             subscription_status=effective.subscription_status,
             current_period_end=effective.current_period_end,
+            subscription_required=effective.subscription_required,
         ),
     )
 
@@ -71,6 +73,7 @@ def _entitlements_response(effective: entitlements.EffectiveEntitlements) -> Ent
         plan_code=effective.plan_code,
         subscription_status=effective.subscription_status,
         current_period_end=effective.current_period_end,
+        subscription_required=effective.subscription_required,
     )
 
 
@@ -89,6 +92,7 @@ async def verify_play_purchase(
     with an access token.
     """
     play: PlayClient = request.app.state.play_client
+    settings = request.app.state.settings
 
     if not play.configured:
         raise ApiError(
@@ -143,7 +147,7 @@ async def verify_play_purchase(
             # the request they are waiting on.
             logger.error("failed to acknowledge %s: %s", purchase.product_id, exc)
 
-    effective = await entitlements.sync_for_user(db, user.user_id)
+    effective = await entitlements.sync_for_user(db, user.user_id, settings)
     return PlayVerifyResponse(
         subscription=subscription_to_response(subscription),
         entitlements=_entitlements_response(effective),

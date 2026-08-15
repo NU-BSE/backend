@@ -7,17 +7,28 @@ collapse into one place.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.db import repositories as repo
-from app.db.models import Subscription, SubscriptionPlan
+from app.db.models import Subscription, SubscriptionPlan, User
+
+logger = logging.getLogger("app.entitlements")
 
 ENTITLEMENT_AGENT_ACCESS = "agent_access"
 ENTITLEMENT_CLOUD_AGENT = "cloud_agent_allowed"
+
+
+# What a demo account is given. Deliberately the Pro daily cap rather than an
+# unlimited one: these credentials are published to reviewers and can leak, and
+# a bounded allowance limits what a leak costs.
+DEMO_PLAN_CODE = "demo"
+DEMO_MAX_AGENT_MESSAGES_PER_DAY = 200
 
 
 @dataclass(frozen=True)
@@ -28,6 +39,37 @@ class EffectiveEntitlements:
     plan_code: str | None
     subscription_status: str | None
     current_period_end: datetime | None
+    # False when this account never needs to buy anything — today, only a demo
+    # account. The client reads this instead of recognising any particular
+    # user, so the app has no idea which accounts are special and the answer
+    # stays a server-side decision.
+    subscription_required: bool = True
+
+
+def is_demo_account(settings: Settings, user: User | None) -> bool:
+    demo = settings.demo_account_set
+    if not demo or user is None or not user.email:
+        return False
+    return user.email.strip().lower() in demo
+
+
+def demo_entitlements() -> EffectiveEntitlements:
+    """Full access with no subscription row and no expiry.
+
+    Nothing is written to the subscription tables for these accounts. A demo
+    grant is a property of the configuration, not of the billing record, so
+    removing the address from DEMO_ACCOUNTS revokes it immediately and leaves
+    no orphaned "active" subscription behind that nobody ever paid for.
+    """
+    return EffectiveEntitlements(
+        agent_access=True,
+        cloud_agent_allowed=True,
+        max_agent_messages_per_day=DEMO_MAX_AGENT_MESSAGES_PER_DAY,
+        plan_code=DEMO_PLAN_CODE,
+        subscription_status="demo",
+        current_period_end=None,
+        subscription_required=False,
+    )
 
 
 async def materialize(
@@ -47,8 +89,23 @@ async def materialize(
     await repo.upsert_entitlements(session, user_id, grants, source)
 
 
-async def sync_for_user(session: AsyncSession, user_id: str) -> EffectiveEntitlements:
-    """Resolve (and re-materialize) the effective rights for a user."""
+async def sync_for_user(
+    session: AsyncSession,
+    user_id: str,
+    settings: Settings,
+) -> EffectiveEntitlements:
+    """Resolve (and re-materialize) the effective rights for a user.
+
+    Demo accounts short-circuit here, which is the whole reason every gate in
+    the service resolves rights through this one function: the agent, the cloud
+    agent and the model-weight download all inherit the exemption without any
+    of them knowing that demo accounts exist.
+    """
+    user = await session.get(User, user_id)
+    if is_demo_account(settings, user):
+        logger.info("demo account %s: entitlements granted without billing", user_id)
+        return demo_entitlements()
+
     subscription = await repo.get_active_subscription(session, user_id)
     if subscription is None:
         return EffectiveEntitlements(

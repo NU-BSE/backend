@@ -32,6 +32,14 @@ class EntitlementsResponse(CamelModel):
     plan_code: str | None
     subscription_status: str | None
     current_period_end: datetime | None
+    # Whether this account has to buy anything to use the product. The app
+    # skips the paywall when this is false, which keeps the list of exempt
+    # accounts entirely server-side — the client never learns who is exempt or
+    # why, only that this caller is.
+    #
+    # Defaulted to True so that an older server, or any response that omits it,
+    # is read as "payment required". A bypass must never be the fallback.
+    subscription_required: bool = True
 
 
 class SubscriptionResponse(CamelModel):

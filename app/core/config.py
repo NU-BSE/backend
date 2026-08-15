@@ -31,6 +31,18 @@ class Settings(BaseSettings):
 
     admin_emails: str = ""
 
+    # Accounts that hold the product without paying for it, for store review.
+    #
+    # Google Play requires working credentials for anything behind a login, and
+    # a reviewer cannot be asked to make a real purchase. These accounts resolve
+    # to full entitlements with no subscription row at all.
+    #
+    # Comma-separated emails, empty by default: a demo bypass that shipped on by
+    # default would be a way to get the paid product for free. Keep this
+    # disjoint from ADMIN_EMAILS — these credentials are handed to strangers,
+    # and /admin/grant must not be among the things they can reach.
+    demo_accounts: str = ""
+
     email_code_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     email_code_resend_cooldown_seconds: int = Field(default=60, ge=5, le=3600)
     email_code_max_per_email_per_hour: int = Field(default=5, ge=1, le=100)
@@ -80,6 +92,10 @@ class Settings(BaseSettings):
     @property
     def admin_email_set(self) -> set[str]:
         return {item.strip().lower() for item in self.admin_emails.split(",") if item.strip()}
+
+    @property
+    def demo_account_set(self) -> set[str]:
+        return {item.strip().lower() for item in self.demo_accounts.split(",") if item.strip()}
 
     @model_validator(mode="after")
     def validate_environment(self) -> "Settings":

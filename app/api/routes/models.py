@@ -66,7 +66,7 @@ async def _may_download(
     if not settings.model_download_requires_entitlement:
         return True, None
 
-    effective = await entitlements.sync_for_user(db, user.user_id)
+    effective = await entitlements.sync_for_user(db, user.user_id, settings)
     if effective.cloud_agent_allowed:
         return True, effective.plan_code
     return False, effective.plan_code
