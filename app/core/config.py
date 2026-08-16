@@ -37,10 +37,16 @@ class Settings(BaseSettings):
     # a reviewer cannot be asked to make a real purchase. These accounts resolve
     # to full entitlements with no subscription row at all.
     #
-    # Comma-separated emails, empty by default: a demo bypass that shipped on by
-    # default would be a way to get the paid product for free. Keep this
-    # disjoint from ADMIN_EMAILS — these credentials are handed to strangers,
-    # and /admin/grant must not be among the things they can reach.
+    # Comma-separated `email:Name` pairs, e.g. "admin@creepy.im:Admin349401".
+    # The name is required and matched exactly, case included: the address
+    # alone is guessable, so the pair is the credential. A bare email (no
+    # colon) is accepted and matches on address only — weaker, and not what a
+    # published demo account should use.
+    #
+    # Empty by default: a demo bypass that shipped on by default would be a way
+    # to get the paid product for free. Keep this disjoint from ADMIN_EMAILS —
+    # these credentials are handed to strangers, and /admin/grant must not be
+    # among the things they can reach.
     demo_accounts: str = ""
 
     email_code_ttl_seconds: int = Field(default=300, ge=30, le=3600)
@@ -110,8 +116,25 @@ class Settings(BaseSettings):
         return {item.strip().lower() for item in self.admin_emails.split(",") if item.strip()}
 
     @property
+    def demo_account_map(self) -> dict[str, str | None]:
+        """Lower-cased email -> the exact name required with it, or None.
+
+        None means "any name", which only happens for a bare address in the
+        configuration. Names are kept verbatim because they are compared
+        exactly; only the email is normalized.
+        """
+        accounts: dict[str, str | None] = {}
+        for item in self.demo_accounts.split(","):
+            entry = item.strip()
+            if not entry:
+                continue
+            email, separator, name = entry.partition(":")
+            accounts[email.strip().lower()] = name.strip() if separator else None
+        return accounts
+
+    @property
     def demo_account_set(self) -> set[str]:
-        return {item.strip().lower() for item in self.demo_accounts.split(",") if item.strip()}
+        return set(self.demo_account_map)
 
     @model_validator(mode="after")
     def validate_environment(self) -> "Settings":

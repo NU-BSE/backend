@@ -41,6 +41,11 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# Distinguishes "not configured as a demo account" from "configured with no
+# required name", which are different answers that a plain .get() would blur.
+_NOT_A_DEMO_ACCOUNT = object()
+
+
 def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
@@ -49,10 +54,24 @@ def _settings(request: Request) -> Settings:
 async def request_code(
     request: Request,
     body: RequestCodeRequest,
+    db: AsyncSession = Depends(get_db),
     codes: EmailCodeService = Depends(get_email_code_service),
     sender: EmailSender = Depends(get_email_sender),
 ) -> RequestCodeResponse:
+    settings = _settings(request)
     email = body.email.lower()
+
+    # The demo sign-in needs the exact name as well as the address. A mismatch
+    # falls through to the ordinary code flow rather than erroring: a distinct
+    # response would confirm to whoever is probing that the address is real.
+    demo_name = settings.demo_account_map.get(email, _NOT_A_DEMO_ACCOUNT)
+    if demo_name is not _NOT_A_DEMO_ACCOUNT and (
+        demo_name is None or (body.name or "").strip() == demo_name
+    ):
+        return await _demo_sign_in(
+            request, db, codes, email=email, name=body.name
+        )
+
     result = await codes.request_code(
         email=email,
         name=body.name,
@@ -105,6 +124,63 @@ async def verify_code(
         refresh_token=refresh_token,
         onboarding_completed=user.name is not None,
         email=email,
+    )
+
+
+async def _demo_sign_in(
+    request: Request,
+    db: AsyncSession,
+    codes: EmailCodeService,
+    *,
+    email: str,
+    name: str | None,
+) -> RequestCodeResponse:
+    """Sign a demo account in without a code.
+
+    Store review needs working credentials, and a reviewer cannot read the
+    mailbox a verification code would be sent to. For addresses in
+    DEMO_ACCOUNTS the code step is therefore skipped entirely: no code is
+    generated, none is emailed, and the session is issued here.
+
+    This is a real bypass and worth being clear about — the address alone is
+    the credential, with no second factor. It is off unless DEMO_ACCOUNTS is
+    set, it should be set only on the deployment reviewers use, and the address
+    should be treated as a published secret.
+
+    Rate limiting still applies, minus two limits that would backfire:
+
+    - the per-email cap is skipped, because a single shared address would
+      otherwise let anyone lock the reviewer out with five requests;
+    - the resend cooldown is skipped, because there is no resend, and a
+      reviewer relaunching the app should not meet a 60-second wall.
+
+    The per-IP hourly cap stays, so this cannot be used to hammer the service.
+    """
+    settings = _settings(request)
+    await codes.enforce_request_limits(
+        email=email,
+        client_ip=_client_ip(request),
+        apply_cooldown=False,
+        apply_email_cap=False,
+    )
+
+    user = await repo.get_user_by_email(db, email)
+    if user is None:
+        user = await repo.create_user(db, email=email, name=name)
+        await _grant_free_plan(db, user)
+        logger.warning("demo sign-in: registered %s (%s)", email, user.user_id)
+    else:
+        logger.warning("demo sign-in: %s (%s)", email, user.user_id)
+
+    return RequestCodeResponse(
+        # No challenge was created; there is nothing to answer.
+        challenge_id="",
+        expires_in_seconds=0,
+        retry_after_seconds=0,
+        auto_verified=True,
+        access_token=create_access_token(settings, user.user_id, email),
+        refresh_token=create_refresh_token(settings, user.user_id, email),
+        onboarding_completed=user.name is not None,
     )
 
 

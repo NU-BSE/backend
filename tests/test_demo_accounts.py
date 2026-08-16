@@ -9,9 +9,11 @@ import httpx
 import pytest
 
 from app.main import create_app
-from tests.conftest import CapturingEmailSender, make_settings, register_user
+from tests.conftest import CapturingEmailSender, email_sender, make_settings
 
 DEMO_EMAIL = "admin@creepy.im"
+DEMO_NAME = "Admin349401"
+DEMO_ENTRY = f"{DEMO_EMAIL}:{DEMO_NAME}"
 
 
 def _settings_with_demo(tmp_path, demo: str):
@@ -25,7 +27,7 @@ def _settings_with_demo(tmp_path, demo: str):
 
 @pytest.fixture
 async def demo_client(tmp_path):
-    app = create_app(_settings_with_demo(tmp_path, DEMO_EMAIL))
+    app = create_app(_settings_with_demo(tmp_path, DEMO_ENTRY))
     async with app.router.lifespan_context(app):
         app.state.email_sender = CapturingEmailSender()
         transport = httpx.ASGITransport(app=app)
@@ -44,8 +46,33 @@ async def no_demo_client(tmp_path):
 
 
 async def _auth(client, email: str) -> dict[str, str]:
-    tokens = await register_user(client, email=email, name="Admin349401")
-    return {"Authorization": f"Bearer {tokens['accessToken']}"}
+    """Sign in, whichever way this account signs in.
+
+    A demo address is auto-verified by request-code and never sees a challenge;
+    everyone else goes through the real two-step flow. Written to handle both
+    so the same helper serves the "is exempt" and "is not exempt" tests.
+    """
+    resp = await client.post(
+        "/auth/email/request-code",
+        json={"email": email, "name": DEMO_NAME, "purpose": "registration"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    if body.get("autoVerified"):
+        return {"Authorization": f"Bearer {body['accessToken']}"}
+
+    # Finish the challenge already started above rather than asking for a
+    # second code, which would trip the resend cooldown.
+    verify = await client.post(
+        "/auth/email/verify-code",
+        json={
+            "challengeId": body["challengeId"],
+            "code": email_sender(client).pop_code(email),
+            "email": email,
+        },
+    )
+    assert verify.status_code == 200, verify.text
+    return {"Authorization": f"Bearer {verify.json()['accessToken']}"}
 
 
 async def test_demo_account_is_entitled_without_paying(demo_client):
@@ -151,3 +178,143 @@ async def test_demo_account_is_not_an_admin(demo_client):
         headers=headers,
     )
     assert resp.status_code == 403
+
+
+# --- signing in without a code -------------------------------------------
+
+
+async def test_demo_account_signs_in_without_a_code(demo_client):
+    """The whole point: a reviewer cannot read the mailbox, so there is no code.
+
+    request-code returns a usable session and no challenge, and no mail is
+    sent — the sender would have recorded it.
+    """
+    resp = await demo_client.post(
+        "/auth/email/request-code",
+        json={"email": DEMO_EMAIL, "name": DEMO_NAME, "purpose": "registration"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["autoVerified"] is True
+    assert body["accessToken"]
+    assert body["refreshToken"]
+    assert body["challengeId"] == ""
+
+    sender = demo_client._transport.app.state.email_sender
+    assert sender.sent == [], "a demo sign-in must not send mail"
+
+    # The token works.
+    me = await demo_client.get(
+        "/users/me", headers={"Authorization": f"Bearer {body['accessToken']}"}
+    )
+    assert me.status_code == 200, me.text
+    assert me.json()["email"] == DEMO_EMAIL
+
+
+async def test_demo_sign_in_is_repeatable(demo_client):
+    """No resend cooldown: a reviewer relaunching the app must not hit a wall,
+    and the second call must reuse the account rather than making another."""
+    first = await demo_client.post(
+        "/auth/email/request-code",
+        json={"email": DEMO_EMAIL, "name": DEMO_NAME, "purpose": "login"},
+    )
+    second = await demo_client.post(
+        "/auth/email/request-code",
+        json={"email": DEMO_EMAIL, "name": DEMO_NAME, "purpose": "login"},
+    )
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["autoVerified"] is True
+
+    def user_id(resp):
+        headers = {"Authorization": f"Bearer {resp.json()['accessToken']}"}
+        return headers
+
+    a = await demo_client.get("/users/me", headers=user_id(first))
+    b = await demo_client.get("/users/me", headers=user_id(second))
+    assert a.json()["userId"] == b.json()["userId"]
+
+
+async def test_ordinary_accounts_still_get_a_code(demo_client):
+    """The bypass is the one address. Everyone else gets the real flow."""
+    resp = await demo_client.post(
+        "/auth/email/request-code",
+        json={"email": "someone@creepy.im", "name": "Someone", "purpose": "registration"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["autoVerified"] is False
+    assert body["accessToken"] is None
+    assert body["challengeId"]
+
+    sender = demo_client._transport.app.state.email_sender
+    assert len(sender.sent) == 1
+
+
+async def test_no_auto_sign_in_when_unconfigured(no_demo_client):
+    """With DEMO_ACCOUNTS empty the same address gets an ordinary code.
+
+    Without this, a bypass that defaulted on would hand a session to anyone who
+    typed the address.
+    """
+    resp = await no_demo_client.post(
+        "/auth/email/request-code",
+        json={"email": DEMO_EMAIL, "name": DEMO_NAME, "purpose": "registration"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["autoVerified"] is False
+    assert resp.json()["accessToken"] is None
+    assert len(no_demo_client._transport.app.state.email_sender.sent) == 1
+
+
+# --- the name is half the credential -------------------------------------
+
+
+def test_the_name_must_match_exactly(tmp_path):
+    from app.db.models import User
+    from app.services.entitlements import is_demo_account
+
+    settings = _settings_with_demo(tmp_path, DEMO_ENTRY)
+
+    def account(name):
+        return User(user_id="u", email=DEMO_EMAIL, name=name)
+
+    assert is_demo_account(settings, account(DEMO_NAME))
+    # Exactly: not a different case, not a prefix, not empty.
+    assert not is_demo_account(settings, account("admin349401"))
+    assert not is_demo_account(settings, account("ADMIN349401"))
+    assert not is_demo_account(settings, account("Admin349401 "))
+    assert not is_demo_account(settings, account("Admin"))
+    assert not is_demo_account(settings, account(""))
+    assert not is_demo_account(settings, account(None))
+
+
+async def test_wrong_name_gets_the_ordinary_code_flow(demo_client):
+    """The right address with the wrong name is just another sign-up.
+
+    It must not error differently either — a distinct response would confirm
+    the address to whoever is guessing.
+    """
+    resp = await demo_client.post(
+        "/auth/email/request-code",
+        json={"email": DEMO_EMAIL, "name": "Someone Else", "purpose": "registration"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["autoVerified"] is False
+    assert body["accessToken"] is None
+    assert body["challengeId"]
+    # A code was actually sent, exactly as for any other address.
+    assert len(demo_client._transport.app.state.email_sender.sent) == 1
+
+
+async def test_missing_name_gets_the_ordinary_code_flow(demo_client):
+    """The sign-in screen sends no name, so it cannot trigger the bypass."""
+    resp = await demo_client.post(
+        "/auth/email/request-code",
+        json={"email": DEMO_EMAIL, "purpose": "login"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["autoVerified"] is False

@@ -47,10 +47,27 @@ class EffectiveEntitlements:
 
 
 def is_demo_account(settings: Settings, user: User | None) -> bool:
-    demo = settings.demo_account_set
-    if not demo or user is None or not user.email:
+    """Whether this account is an unbilled demo account.
+
+    The identity is the (email, name) pair, not the address: the address is
+    guessable and the name is not, so both must match, and the name exactly —
+    case included. A configured entry with no name matches on address alone,
+    which is weaker and only there for backwards compatibility.
+    """
+    if user is None or not user.email:
         return False
-    return user.email.strip().lower() in demo
+    accounts = settings.demo_account_map
+    if not accounts:
+        return False
+
+    email = user.email.strip().lower()
+    if email not in accounts:
+        return False
+
+    required_name = accounts[email]
+    if required_name is None:
+        return True
+    return (user.name or "") == required_name
 
 
 def demo_entitlements() -> EffectiveEntitlements:
