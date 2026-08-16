@@ -51,36 +51,45 @@ class EmailCodeService:
         self._store = store
         self._settings = settings
 
-    async def request_code(
+    async def enforce_request_limits(
         self,
         *,
         email: str,
-        name: str | None,
-        purpose: str,
         client_ip: str,
-    ) -> RequestCodeResult:
-        """Create a challenge and return it with the plaintext code to deliver."""
-        retry_after = await self._cooldown_remaining(email)
-        if retry_after > 0:
-            raise ApiError(
-                429,
-                "RATE_LIMITED",
-                "A verification code was sent recently. Please wait before requesting another.",
-                retryable=True,
-                extra={"retryAfterSeconds": retry_after},
-            )
+        apply_cooldown: bool = True,
+        apply_email_cap: bool = True,
+    ) -> None:
+        """The abuse limits guarding code requests.
 
-        email_count = await self._store.incr(
-            f"{RL_EMAIL_PREFIX}{email}", HOUR_SECONDS
-        )
-        if email_count > self._settings.email_code_max_per_email_per_hour:
-            raise ApiError(
-                429,
-                "RATE_LIMITED",
-                "Too many verification codes requested for this email. Try again later.",
-                retryable=True,
-                extra={"retryAfterSeconds": HOUR_SECONDS},
+        Split out of `request_code` so a caller that issues no code — the demo
+        sign-in path — is still rate limited rather than being an unmetered
+        endpoint. The two toggles exist for exactly that caller; see the demo
+        branch in the auth route for why each one is turned off there.
+        """
+        if apply_cooldown:
+            retry_after = await self._cooldown_remaining(email)
+            if retry_after > 0:
+                raise ApiError(
+                    429,
+                    "RATE_LIMITED",
+                    "A verification code was sent recently. "
+                    "Please wait before requesting another.",
+                    retryable=True,
+                    extra={"retryAfterSeconds": retry_after},
+                )
+
+        if apply_email_cap:
+            email_count = await self._store.incr(
+                f"{RL_EMAIL_PREFIX}{email}", HOUR_SECONDS
             )
+            if email_count > self._settings.email_code_max_per_email_per_hour:
+                raise ApiError(
+                    429,
+                    "RATE_LIMITED",
+                    "Too many verification codes requested for this email. Try again later.",
+                    retryable=True,
+                    extra={"retryAfterSeconds": HOUR_SECONDS},
+                )
 
         ip_count = await self._store.incr(f"{RL_IP_PREFIX}{client_ip}", HOUR_SECONDS)
         if ip_count > self._settings.email_code_max_per_ip_per_hour:
@@ -91,6 +100,17 @@ class EmailCodeService:
                 retryable=True,
                 extra={"retryAfterSeconds": HOUR_SECONDS},
             )
+
+    async def request_code(
+        self,
+        *,
+        email: str,
+        name: str | None,
+        purpose: str,
+        client_ip: str,
+    ) -> RequestCodeResult:
+        """Create a challenge and return it with the plaintext code to deliver."""
+        await self.enforce_request_limits(email=email, client_ip=client_ip)
 
         challenge_id = secrets.token_hex(16)
         code = f"{secrets.randbelow(1_000_000):06d}"
