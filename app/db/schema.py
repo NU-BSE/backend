@@ -14,8 +14,14 @@ logger = logging.getLogger("app.db")
 # plans, which is how Play models a monthly/annual choice — not two products.
 PLAY_SUBSCRIPTION_PRODUCT_ID = "creepyim_pro"
 
-PLAY_BASE_PLAN_MONTHLY = "creepyim-pro-monthly"
-PLAY_BASE_PLAN_ANNUAL = "creepyim-pro-annual"
+# The base plan ids exactly as the Play Console generated them.
+#
+# Opaque ids, not descriptions. Readable ones were invented here and in the
+# app, and Play answered "no active offer for creepyim-pro-annual" for a plan
+# that was published and active the whole time — the console had named it
+# plan-2. Anything that has to match Play must be copied from Play.
+PLAY_BASE_PLAN_MONTHLY = "plan-1"
+PLAY_BASE_PLAN_ANNUAL = "plan-2"
 
 # Play's base plan id is the only thing that identifies which plan was bought,
 # so it is the join between Google's world and ours. The client sends a token
@@ -58,7 +64,10 @@ SEED_PLANS: list[dict[str, object]] = [
         "currency": "USD",
         "interval": "month",
         "interval_count": 1,
-        "trial_days": 7,
+        # No trial on monthly: the Play offer (trial-2) hangs off the annual
+        # base plan only, so a trial advertised here would be one the store
+        # never grants.
+        "trial_days": 0,
         "agent_access": True,
         "cloud_agent_allowed": True,
         "max_agent_messages_per_day": 200,
