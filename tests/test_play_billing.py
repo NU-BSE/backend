@@ -22,7 +22,7 @@ from tests.conftest import register_user
 def _play_payload(
     *,
     state: str = "SUBSCRIPTION_STATE_ACTIVE",
-    base_plan_id: str = "creepyim-pro-monthly",
+    base_plan_id: str = "plan-1",
     expiry_days: int = 30,
     price_units: str = "12",
     acknowledged: bool = False,
@@ -117,7 +117,7 @@ def test_longest_line_item_wins():
         {
             "productId": "creepyim_pro",
             "expiryTime": "2020-01-01T00:00:00Z",
-            "offerDetails": {"basePlanId": "creepyim-pro-monthly"},
+            "offerDetails": {"basePlanId": "plan-1"},
         },
     )
     parsed = _parse_subscription("tok", payload)
@@ -167,7 +167,7 @@ async def test_verify_grants_entitlement(client):
 
 async def test_annual_base_plan_maps_to_annual_plan(client):
     headers = await _auth(client, "annual@creepy.im")
-    _install(client, FakePlayClient(_play_payload(base_plan_id="creepyim-pro-annual")))
+    _install(client, FakePlayClient(_play_payload(base_plan_id="plan-2")))
 
     resp = await client.post(
         "/subscriptions/play/verify", json={"purchaseToken": "tok-a"}, headers=headers
@@ -179,11 +179,11 @@ async def test_annual_base_plan_maps_to_annual_plan(client):
 async def test_client_cannot_choose_its_own_plan(client):
     """The request body names the annual plan; Play says monthly. Play wins."""
     headers = await _auth(client, "liar@creepy.im")
-    _install(client, FakePlayClient(_play_payload(base_plan_id="creepyim-pro-monthly")))
+    _install(client, FakePlayClient(_play_payload(base_plan_id="plan-1")))
 
     resp = await client.post(
         "/subscriptions/play/verify",
-        json={"purchaseToken": "tok-x", "basePlanId": "creepyim-pro-annual"},
+        json={"purchaseToken": "tok-x", "basePlanId": "plan-2"},
         headers=headers,
     )
     assert resp.status_code == 200, resp.text
