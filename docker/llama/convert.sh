@@ -76,6 +76,18 @@ convert_hf="$(find_script convert_hf_to_gguf.py)" || {
   exit 1
 }
 
+# Work from a staged copy rather than the read-only teacher: this checkpoint's
+# tokenizer_config.json needs one field normalised before transformers will
+# load it. See stage_source.py for what and why.
+#
+# --model-name is passed explicitly below because the converter otherwise names
+# the model after its source directory, which staging would make "hf-staged" —
+# a name that then shows up in /v1/models and in every server log line.
+STAGE_DIR="${OUT_DIR}/hf-staged"
+log "staging checkpoint"
+python3 /opt/creepy/stage_source.py "$SRC_DIR" "$STAGE_DIR"
+SRC_DIR="$STAGE_DIR"
+
 # Fail early and legibly if the image predates Qwen3-VL support. Without this
 # the converter dies deep inside a model registry lookup with a message that
 # does not mention the image at all.
@@ -95,7 +107,8 @@ fi
 # 1. Text model.
 if [[ ! -f "$TEXT_F16" ]]; then
   log "converting text model to f16"
-  python3 "$convert_hf" "$SRC_DIR" --outfile "$TEXT_F16" --outtype f16
+  python3 "$convert_hf" "$SRC_DIR" --outfile "$TEXT_F16" --outtype f16 \
+    --model-name "$NAME"
 else
   log "text f16 present"
 fi
@@ -107,7 +120,8 @@ fi
 # vision model into a text-only one without any error.
 if [[ ! -f "$MMPROJ" ]]; then
   log "converting vision projector to f16"
-  python3 "$convert_hf" "$SRC_DIR" --outfile "$MMPROJ" --outtype f16 --mmproj
+  python3 "$convert_hf" "$SRC_DIR" --outfile "$MMPROJ" --outtype f16 --mmproj \
+    --model-name "$NAME"
 else
   log "mmproj present"
 fi
@@ -135,6 +149,7 @@ fi
 if [[ "${LLAMA_KEEP_INTERMEDIATES:-0}" != "1" ]]; then
   rm -f "$TEXT_F16"
 fi
+rm -rf "$STAGE_DIR"
 
 log "built ${FINAL}"
 log "vision  ${MMPROJ}"

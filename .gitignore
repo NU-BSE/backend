@@ -23,3 +23,9 @@ app/models/
 play-*.json
 
 .DS_Store
+
+# Converted model weights. Multi-GB binaries that are reproducible from the
+# merged teacher via docker/llama/convert.sh — committing them would put
+# gigabytes in every clone for something a build step regenerates.
+/models/
+*.gguf
