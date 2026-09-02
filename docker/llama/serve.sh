@@ -15,11 +15,14 @@ set -euo pipefail
 
 MODEL_DIR="${LLAMA_MODEL_DIR:-/models}"
 QUANT="${LLAMA_QUANT:-Q4_K_M}"
-MODEL="${MODEL_DIR}/gui-owl-1.5-2b-chat-${QUANT,,}.gguf"
+NAME="${LLAMA_MODEL_NAME:-gui-owl-2b}"
+MODEL="${MODEL_DIR}/${NAME}-${QUANT,,}.gguf"
+# The vision encoder, produced alongside the text model by the converter.
+MMPROJ="${MODEL_DIR}/${NAME}-mmproj-f16.gguf"
 PORT="${LLAMA_PORT:-8080}"
 CTX="${LLAMA_CTX_SIZE:-8192}"
 PARALLEL="${LLAMA_PARALLEL:-2}"
-ALIAS="${LLAMA_MODEL_ALIAS:-gui-owl-1.5-2b-chat}"
+ALIAS="${LLAMA_MODEL_ALIAS:-gui-owl-2b}"
 
 log() { printf '[serve] %s\n' "$*" >&2; }
 
@@ -65,13 +68,15 @@ args=(
   --n-gpu-layers "$gpu_layers"
 )
 
-# Set by the converter only when it could not merge the adapter ahead of time.
-if [[ -f "${MODEL_DIR}/.runtime-lora" ]]; then
-  lora="$(cat "${MODEL_DIR}/.runtime-lora")"
-  if [[ -f "$lora" ]]; then
-    log "applying chat adapter at load time: $lora"
-    args+=(--lora "$lora")
-  fi
+# The vision encoder. Without it the server starts happily and answers text
+# while silently refusing images — which, for a model whose purpose is reading
+# screens, is a failure that looks like success. Absence is therefore reported
+# rather than shrugged off.
+if [[ -f "$MMPROJ" ]]; then
+  log "vision enabled: $MMPROJ"
+  args+=(--mmproj "$MMPROJ")
+else
+  log "WARNING: $MMPROJ missing — serving text only, images will be refused"
 fi
 
 if [[ "$gpu_layers" == "0" ]]; then
