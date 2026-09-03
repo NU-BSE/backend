@@ -32,9 +32,9 @@ import secrets
 import time
 from dataclasses import dataclass
 
+import jwt
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-import jwt
 
 from app.core.config import Settings
 
@@ -110,7 +110,7 @@ def wrap_model_key(model_key: bytes, device_public_key_der: bytes) -> str:
     """
     try:
         public_key = serialization.load_der_public_key(device_public_key_der)
-    except Exception as exc:  # noqa: BLE001 - any parse failure is the same answer
+    except Exception as exc:  # Any parse failure is the same answer to the caller.
         raise LicenseError("The device public key could not be read.") from exc
 
     if not isinstance(public_key, rsa.RSAPublicKey):
@@ -163,7 +163,7 @@ def sign_license(
 
     try:
         token = jwt.encode(claims, private_pem, algorithm="RS256")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise LicenseError(f"The licence could not be signed: {exc}") from exc
 
     return token, expires_at
@@ -173,7 +173,7 @@ def decode_public_key(encoded: str) -> bytes:
     """Decode a base64 DER SubjectPublicKeyInfo from the client."""
     try:
         der = base64.b64decode(encoded, validate=True)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise LicenseError("The device public key is not valid base64.") from exc
     if not der:
         raise LicenseError("The device public key is empty.")
@@ -201,5 +201,5 @@ def load_model_key(settings: Settings, model_version: str) -> bytes:
         raise LicenseError(f"Model version {model_version} is not licensed.")
     try:
         return base64.b64decode(encoded, validate=True)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise LicenseError(f"The key for {model_version} is not valid base64.") from exc

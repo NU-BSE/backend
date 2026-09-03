@@ -17,9 +17,8 @@ against a licence request from a rooted one.
 
 from __future__ import annotations
 
-import time
-
 import logging
+import time
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import Field
@@ -30,8 +29,8 @@ from app.db.models import User
 from app.schemas.common import CamelModel
 from app.services.device_license import (
     DEFAULT_LICENSE_TTL_SECONDS,
-    LicenseError,
     NONCE_TTL_SECONDS,
+    LicenseError,
     decode_public_key,
     device_key_hash,
     issue_nonce,

@@ -183,13 +183,17 @@ def _parse_verdict(payload: dict[str, Any]) -> IntegrityVerdict:
     device_integrity = payload.get("deviceIntegrity") or {}
     account_details = payload.get("accountDetails") or {}
 
+    # No usable timestamp means freshness cannot be established, and an
+    # unbounded age is the safe reading: the caller rejects anything older than
+    # MAX_VERDICT_AGE_SECONDS, so an absent or malformed field fails closed
+    # rather than passing a replayed verdict.
     timestamp_ms = request_details.get("timestampMillis")
-    try:
-        age = time.time() - (float(timestamp_ms) / 1000.0)
-    except (TypeError, ValueError):
-        # No usable timestamp means freshness cannot be established, and an
-        # unbounded age is the safe reading.
-        age = float("inf")
+    age = float("inf")
+    if timestamp_ms is not None:
+        try:
+            age = time.time() - (float(timestamp_ms) / 1000.0)
+        except (TypeError, ValueError):
+            age = float("inf")
 
     return IntegrityVerdict(
         package_name=str(
