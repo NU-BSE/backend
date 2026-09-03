@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     require_strong_integrity: bool = False
     """Demand MEETS_STRONG_INTEGRITY rather than MEETS_DEVICE_INTEGRITY."""
 
+    # Where translated MCP server bundles are written. Content-addressed, so
+    # this is a cache: deleting it costs a re-translation, never correctness.
+    mcp_bundle_root: str = "var/mcp-bundles"
+
     # On-device model weights served to paying clients.
     model_artifact_root: str = "app/models"
     # Entitlement required to download weights. Empty disables the gate, which
