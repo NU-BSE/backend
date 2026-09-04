@@ -48,6 +48,18 @@ def link_or_copy(source: Path, destination: Path) -> None:
 
 
 def main(source_dir: str, root: str, model: str, name: str) -> int:
+    # An empty root is what `"$MODEL_ARTIFACT_ROOT"` expands to when the
+    # variable is not set, and Path("") is ".", so this would publish into the
+    # current directory and report success. The catalogue would go on finding
+    # nothing, with no error anywhere to explain it.
+    if not root.strip():
+        print(
+            "[publish] FATAL: the destination root is empty. Pass the same "
+            "path the API reads as MODEL_ARTIFACT_ROOT (default: app/models).",
+            file=sys.stderr,
+        )
+        return 2
+
     source = Path(source_dir)
     target = Path(root) / model / "artifacts" / "gguf"
     target.mkdir(parents=True, exist_ok=True)
@@ -76,6 +88,14 @@ def main(source_dir: str, root: str, model: str, name: str) -> int:
     temporary.write_text(json.dumps({"files": published, "student": model}, indent=2))
     temporary.replace(manifest)
     print(f"[publish] manifest {manifest}", file=sys.stderr)
+    # The catalogue is built once, at API startup: the manifests do not change
+    # while the process runs, so a publish into a live deployment is invisible
+    # until it restarts. Saying so here is cheaper than the alternative, which
+    # is someone concluding the publish did not work.
+    print(
+        "[publish] done. Restart the API — the catalogue is read at startup.",
+        file=sys.stderr,
+    )
     return 0
 
 
