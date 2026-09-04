@@ -470,6 +470,32 @@ def _esbuild_command() -> list[str]:
     )
 
 
+def _npm_diagnosis(output: str) -> list[str]:
+    """The lines of npm's output that say what went wrong.
+
+    npm prints the cause first and then several lines of housekeeping — where
+    the debug log was written, how to report a bug. Taking the *last* lines,
+    which is the obvious way to get "the end of the error", reliably captures
+    the housekeeping and discards the diagnosis: a user was shown a path to a
+    log file inside a temporary directory that had already been deleted,
+    instead of "No matching version found for @claude-flow/mcp@3.0.0-alpha.10".
+    """
+    useful: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # The trailer, in npm's several spellings across versions.
+        if "A complete log of this run" in stripped or "_logs/" in stripped:
+            continue
+        if stripped.endswith("debug-0.log"):
+            continue
+        useful.append(stripped)
+        if len(useful) >= 4:
+            break
+    return useful
+
+
 def install(repo: Path) -> None:
     """Install dependencies, without running the repository's own scripts.
 
@@ -517,11 +543,10 @@ def install(repo: Path) -> None:
             )
 
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip().splitlines()
         raise BundleError(
             BundleErrorType.PREPARATION_FAILED,
             "The server's dependencies could not be installed.",
-            detail[-3:],
+            _npm_diagnosis(result.stderr or result.stdout or ""),
         )
 
 

@@ -343,3 +343,28 @@ def test_the_servers_own_package_identity_is_injected(tmp_path):
 
     assert '"weather-mcp"' in code
     assert '"1.0.0"' in code
+
+def test_the_npm_diagnosis_is_the_cause_not_the_trailer():
+    """npm prints the reason first and housekeeping last.
+
+    Taking the last lines — the obvious way to get "the end of the error" —
+    captured the path to a debug log inside a temporary directory that had
+    already been deleted, and discarded the one line that said what was wrong.
+    """
+    output = "\n".join(
+        [
+            "npm error code ETARGET",
+            "npm error notarget No matching version found for @claude-flow/mcp@3.0.0-alpha.10.",
+            "npm error notarget In most cases you or one of your dependencies",
+            "npm error A complete log of this run can be found in:",
+            "npm error     /tmp/creepy-mcp-x/repo/.npm-cache/_logs/"
+            "2026-09-04T04_29_25_422Z-debug-0.log",
+        ]
+    )
+
+    hints = bundler._npm_diagnosis(output)
+
+    assert any("No matching version" in hint for hint in hints)
+    assert not any("_logs/" in hint for hint in hints)
+    assert not any("complete log" in hint for hint in hints)
+
