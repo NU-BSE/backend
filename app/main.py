@@ -14,7 +14,9 @@ from app.api.routes import (
     agent,
     auth,
     chat,
+    device,
     health,
+    mcp,
     models,
     subscriptions,
     users,
@@ -122,6 +124,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(models.router)
     app.include_router(agent.router)
+    app.include_router(device.router)
+    app.include_router(mcp.router)
 
 
     @app.get("/")

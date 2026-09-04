@@ -97,6 +97,23 @@ class Settings(BaseSettings):
     # payment, so a leaked one would otherwise entitle whoever presents it.
     play_verify_enabled: bool = True
 
+    # Device-bound model licensing.
+    #
+    # The signing key is asymmetric on purpose: the app must verify licences,
+    # so whatever verifies them ships inside the app. An HMAC secret would
+    # therefore be extractable from any build and would let its holder mint
+    # licences; the app carries only the public half.
+    license_signing_key: str = ""
+    """RSA private key, PEM. Empty disables licence issuance entirely."""
+    model_keys_json: str = ""
+    """{"<modelVersion>": "<base64 AES key>"} — dropping a version revokes it."""
+    require_strong_integrity: bool = False
+    """Demand MEETS_STRONG_INTEGRITY rather than MEETS_DEVICE_INTEGRITY."""
+
+    # Where translated MCP server bundles are written. Content-addressed, so
+    # this is a cache: deleting it costs a re-translation, never correctness.
+    mcp_bundle_root: str = "var/mcp-bundles"
+
     # On-device model weights served to paying clients.
     model_artifact_root: str = "app/models"
     # Entitlement required to download weights. Empty disables the gate, which
