@@ -6,8 +6,10 @@ server at all, and a server reaching for parts of Node a phone does not have
 each fail in a way that names the actual reason.
 """
 
+import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -120,11 +122,17 @@ needs_toolchain = pytest.mark.skipif(
 
 
 @needs_toolchain
-def test_a_server_reaching_for_the_filesystem_is_refused_by_name(tmp_path):
-    """The refusal has to name the module, or it points the user nowhere."""
+def test_a_server_spawning_processes_is_refused_by_name(tmp_path):
+    """The refusal has to name the module, or it points the user nowhere.
+
+    `fs` used to be the example here. It is shimmed now — servers overwhelmingly
+    use it to read their own manifest or keep one small JSON file, and both
+    work in the virtual filesystem. `child_process` has no such reading: there
+    is nothing on Android for it to spawn.
+    """
     repo = _node_repo(
         tmp_path,
-        body="import { readFileSync } from 'node:fs';\nexport const x = readFileSync;\n",
+        body="import { spawn } from 'node:child_process';\nexport const x = spawn;\n",
     )
 
     detection = bundler.detect(repo)
@@ -132,8 +140,8 @@ def test_a_server_reaching_for_the_filesystem_is_refused_by_name(tmp_path):
         bundler.translate(repo, detection, SHIMS)
 
     assert caught.value.type == bundler.BundleErrorType.RUNTIME_NOT_SUPPORTED
-    assert "fs" in str(caught.value)
-    assert any("cannot do inside the app sandbox" in hint for hint in caught.value.hints)
+    assert "child_process" in str(caught.value)
+    assert any("Android does not permit" in hint for hint in caught.value.hints)
 
 
 @needs_toolchain
@@ -293,7 +301,7 @@ def test_import_meta_is_replaced(tmp_path):
         if "import.meta" in line and not line.lstrip().startswith("//")
     ]
     assert executable == [], executable
-    assert "file:///mcp-server.js" in code
+    assert "file:///mcp-server/index.js" in code
 
 
 @needs_toolchain
@@ -367,4 +375,117 @@ def test_the_npm_diagnosis_is_the_cause_not_the_trailer():
     assert any("No matching version" in hint for hint in hints)
     assert not any("_logs/" in hint for hint in hints)
     assert not any("complete log" in hint for hint in hints)
+
+# --- the virtual filesystem ----------------------------------------------
+
+
+def _run_bundle(code: str, tmp_path, seeded: dict | None = None) -> dict:
+    """Evaluate a bundle the way the device does, and report what it did."""
+    bundle = tmp_path / "bundle.mjs"
+    bundle.write_text(code)
+    harness = Path("tests/fixtures/run_bundle.mjs").resolve()
+    args = ["node", str(harness), str(bundle)]
+    if seeded is not None:
+        args.append(json.dumps(seeded))
+    result = subprocess.run(args, capture_output=True, text=True, timeout=60, check=False)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+@needs_toolchain
+def test_a_server_reads_its_own_package_json_through_the_virtual_fs(tmp_path):
+    """The pattern that made weather-mcp unrunnable: readFileSync of its own manifest."""
+    repo = _node_repo(
+        tmp_path,
+        body=(
+            "import { readFileSync } from 'fs';\n"
+            "import { join } from 'path';\n"
+            "const raw = readFileSync(join(__dirname, '../package.json'), 'utf-8');\n"
+            "globalThis.__result = JSON.parse(raw).name;\n"
+        ),
+    )
+
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+    out = _run_bundle(code, tmp_path)
+
+    assert out["result"] == "weather-mcp"
+
+
+@needs_toolchain
+def test_writes_survive_a_restart_through_the_host(tmp_path):
+    """A server's own state must come back, or it silently starts empty forever."""
+    repo = _node_repo(
+        tmp_path,
+        body=(
+            "import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';\n"
+            "import { homedir } from 'os';\n"
+            "import { join } from 'path';\n"
+            "const dir = join(homedir(), '.weather-mcp');\n"
+            "mkdirSync(dir, { recursive: true });\n"
+            "const file = join(dir, 'locations.json');\n"
+            "const before = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : [];\n"
+            "before.push('Almaty');\n"
+            "writeFileSync(file, JSON.stringify(before));\n"
+            "globalThis.__result = before;\n"
+        ),
+    )
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    first = _run_bundle(code, tmp_path)
+    assert first["result"] == ["Almaty"]
+    # The host is handed the whole store to persist, under the path the server
+    # chose from homedir().
+    assert "/home/mcp/.weather-mcp/locations.json" in first["saved"]
+
+    # Restarting with what the host kept must resume, not start over.
+    second = _run_bundle(code, tmp_path, seeded=first["saved"])
+    assert second["result"] == ["Almaty", "Almaty"]
+
+
+@needs_toolchain
+def test_persisted_state_wins_over_the_seeded_package_json(tmp_path):
+    """A user's saved file must not be replaced by the shipped default."""
+    repo = _node_repo(
+        tmp_path,
+        body=(
+            "import { readFileSync } from 'fs';\n"
+            "globalThis.__result = readFileSync('/package.json', 'utf-8');\n"
+        ),
+    )
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    out = _run_bundle(code, tmp_path, seeded={"/package.json": "edited-by-the-server"})
+
+    assert out["result"] == "edited-by-the-server"
+
+
+@needs_toolchain
+def test_a_missing_file_still_says_ENOENT(tmp_path):
+    """Servers branch on the error code; a different one changes behaviour."""
+    repo = _node_repo(
+        tmp_path,
+        body=(
+            "import { readFileSync } from 'fs';\n"
+            "try { readFileSync('/nope.json', 'utf-8'); }\n"
+            "catch (error) { globalThis.__result = error.code; }\n"
+        ),
+    )
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    assert _run_bundle(code, tmp_path)["result"] == "ENOENT"
+
+
+@needs_toolchain
+def test_an_unshimmed_builtin_is_still_named(tmp_path):
+    """Adding a shim removes an entry from the curated reasons dictionary.
+
+    Naming used to depend on that dictionary, so every shim silently degraded
+    the message for servers needing something else.
+    """
+    repo = _node_repo(tmp_path, body="import 'node:zlib';\nexport const x = 1;\n")
+
+    with pytest.raises(bundler.BundleError) as caught:
+        bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    assert "zlib" in str(caught.value)
 

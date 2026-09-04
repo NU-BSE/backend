@@ -82,12 +82,21 @@ BUNDLE_TIMEOUT_SECONDS = 120
 # formatters and calling-convention adapters, and every one of them is common
 # enough that excluding it would exclude most real servers. The official
 # sequential-thinking server needs three of them and nothing else.
-SHIMMED_BUILTINS = ("path", "url", "events", "util", "module")
+SHIMMED_BUILTINS = (
+    "path",
+    "url",
+    "events",
+    "util",
+    "module",
+    "fs",
+    "os",
+    "http",
+    "https",
+)
 
 # Modules whose absence is fatal on a device. Each maps to the reason, because
 # "cannot resolve node:fs" tells a user nothing about what to do next.
 UNSUPPORTED_BUILTINS = {
-    "fs": "reads or writes files, which it cannot do inside the app sandbox",
     "child_process": "spawns other programs, which Android does not permit",
     "worker_threads": "starts OS threads the JavaScript runtime does not have",
     "net": "opens raw sockets",
@@ -96,9 +105,6 @@ UNSUPPORTED_BUILTINS = {
     "cluster": "forks worker processes",
     "v8": "reaches into the V8 engine, and the app runs Hermes",
     "vm": "compiles code at runtime",
-    "os": "inspects the host operating system",
-    "http": "runs an HTTP server or client through Node's stack",
-    "https": "runs an HTTPS server or client through Node's stack",
 }
 
 # Import specifiers for the stdio transport across SDK generations. Both are
@@ -550,12 +556,32 @@ def install(repo: Path) -> None:
         )
 
 
+# Every Node builtin, so an unresolved one can be named as such rather than
+# reported as an unresolved package. The list is what `node -p
+# "require('module').builtinModules"` prints, minus the ones this bundler
+# shims; membership decides *how* a failure is described, never whether it is
+# one.
+_NODE_BUILTINS = frozenset(
+    """assert async_hooks buffer child_process cluster console constants crypto dgram
+    diagnostics_channel dns domain fs http http2 https inspector module net os path
+    perf_hooks process punycode querystring readline repl stream string_decoder timers
+    tls trace_events tty url util v8 vm wasi worker_threads zlib""".split()
+)
+
+
 def _unsupported_from_errors(stderr: str) -> list[str]:
-    """Pull the Node builtins out of esbuild's unresolved-import errors."""
+    """Pull the Node builtins out of esbuild's unresolved-import errors.
+
+    Any builtin counts, not only the ones with a hand-written explanation.
+    Restricting this to a curated dictionary meant that adding a shim — which
+    removes an entry from it — silently downgraded every *other* server that
+    needed a different module from "this needs node:crypto and node:stream" to
+    "could not be translated", which says nothing a user can act on.
+    """
     names: list[str] = []
-    for match in re.finditer(r'Could not resolve "(?:node:)?([a-z_]+)"', stderr):
-        name = match.group(1)
-        if name in UNSUPPORTED_BUILTINS and name not in names:
+    for match in re.finditer(r'Could not resolve "(?:node:)?([a-z_0-9/]+)"', stderr):
+        name = match.group(1).split("/")[0]
+        if name in _NODE_BUILTINS and name not in names:
             names.append(name)
     return names
 
@@ -575,6 +601,32 @@ def _package_identity(repo: Path) -> str:
             "version": str(package.get("version") or "0.0.0"),
         }
     )
+
+
+def _seed_files(repo: Path) -> str:
+    """Files the virtual filesystem starts with, as JSON for --define.
+
+    Only package.json, at both the paths a bundled server looks for it: beside
+    the module and one level up, which is what `join(__dirname, "..")` produces
+    from the fictional directory the bundle claims to live in.
+
+    Nothing else is seeded. A server's own source is already inlined, and
+    copying a repository's data files into every bundle would put megabytes
+    into a download to satisfy a lookup that may never happen.
+    """
+    package = _read_json(repo / "package.json")
+    if package is None:
+        return "{}"
+    # Re-serialised rather than passed through: the original may hold hundreds
+    # of lines of dependency and script metadata that mean nothing here.
+    content = json.dumps(
+        {
+            "name": package.get("name") or "mcp-server",
+            "version": package.get("version") or "0.0.0",
+            "description": package.get("description") or "",
+        }
+    )
+    return json.dumps({"/package.json": content, "/mcp-server/package.json": content})
 
 
 def translate(repo: Path, detection: Detection, shims: Path) -> str:
@@ -632,8 +684,15 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
         # `fileURLToPath(import.meta.url)` to locate the module. There is no
         # module and no filesystem, so any subsequent file access fails on its
         # own terms rather than on a malformed URL here.
-        '--define:import.meta={"url":"file:///mcp-server.js"}',
+        '--define:import.meta={"url":"file:///mcp-server/index.js"}',
         f"--define:__CREEPY_PACKAGE__={_package_identity(repo)}",
+        # An ESM bundle defines neither, and servers use them to find their own
+        # package.json — `join(__dirname, "../package.json")` is the usual
+        # spelling. Given a directory one level down from the root, that
+        # resolves to /package.json, which is where the seed puts it.
+        '--define:__dirname="/mcp-server"',
+        '--define:__filename="/mcp-server/index.js"',
+        f"--define:__CREEPY_SEED_FILES__={_seed_files(repo)}",
         f"--inject:{shims / 'process-shim.mjs'}",
         f"--alias:node:process={shims / 'process-shim.mjs'}",
         f"--alias:process={shims / 'process-shim.mjs'}",
@@ -656,7 +715,14 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
     if result.returncode != 0:
         unsupported = _unsupported_from_errors(result.stderr or "")
         if unsupported:
-            reasons = [f"{name} — the server {UNSUPPORTED_BUILTINS[name]}" for name in unsupported]
+            reasons = [
+                f"{name} — the server {UNSUPPORTED_BUILTINS[name]}"
+                if name in UNSUPPORTED_BUILTINS
+                # No hand-written explanation for this one. Naming it is still
+                # far more use than not naming it.
+                else f"{name} — a part of Node the sandbox does not provide"
+                for name in unsupported
+            ]
             raise BundleError(
                 BundleErrorType.RUNTIME_NOT_SUPPORTED,
                 "This server needs parts of Node that a phone does not have: "
