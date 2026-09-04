@@ -151,5 +151,16 @@ if [[ "${LLAMA_KEEP_INTERMEDIATES:-0}" != "1" ]]; then
 fi
 rm -rf "$STAGE_DIR"
 
+# 4. Publish into the layout /models/catalog serves from.
+#
+# Without this the weights exist but the app cannot see them: the catalogue
+# reads <root>/<model>/artifacts/gguf/ and needs an export manifest carrying
+# each file's size and SHA-256, which is what the device checks a download
+# against before running it.
+CATALOG_ROOT="${MODEL_ARTIFACT_ROOT:-${OUT_DIR}/catalog}"
+CATALOG_MODEL="${LLAMA_CATALOG_MODEL:-2b}"
+log "publishing to ${CATALOG_ROOT}/${CATALOG_MODEL}"
+python3 /opt/creepy/publish_bundle.py "$OUT_DIR" "$CATALOG_ROOT" "$CATALOG_MODEL" "$NAME"
+
 log "built ${FINAL}"
 log "vision  ${MMPROJ}"

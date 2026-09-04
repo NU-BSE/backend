@@ -208,3 +208,138 @@ async def test_an_unfetchable_repository_reports_the_reason(client, monkeypatch)
     assert body["code"] == bundler.BundleErrorType.UNSUPPORTED_REPOSITORY
     # The hint is the actionable half; losing it leaves only "unsupported".
     assert body["hints"]
+
+# --- real-world entry points ---------------------------------------------
+
+
+def test_a_declared_build_output_falls_back_to_source(tmp_path):
+    """Every official Node MCP server declares dist/index.js and commits none of it.
+
+    package.json points at the npm artifact, not at anything in the
+    repository, so taking it literally refused all of them.
+    """
+    repo = tmp_path / "srv"
+    (repo / "src").mkdir(parents=True)
+    (repo / "package.json").write_text(
+        '{"name":"srv","bin":{"srv":"dist/index.js"},'
+        '"dependencies":{"@modelcontextprotocol/sdk":"^1"}}'
+    )
+    (repo / "src" / "index.ts").write_text("export const ok = true;\n")
+
+    detection = bundler.detect(repo)
+
+    assert detection.entrypoint == "src/index.ts"
+    assert any("build output" in line for line in detection.evidence)
+
+
+def test_the_source_matching_the_declared_name_wins(tmp_path):
+    """dist/server.js is server.ts, not whichever candidate is listed first."""
+    repo = tmp_path / "srv"
+    (repo / "src").mkdir(parents=True)
+    (repo / "package.json").write_text('{"name":"srv","main":"dist/server.js"}')
+    (repo / "src" / "index.ts").write_text("export const wrong = true;\n")
+    (repo / "src" / "server.ts").write_text("export const right = true;\n")
+
+    assert bundler.detect(repo).entrypoint == "src/server.ts"
+
+
+def test_a_root_level_entry_is_found_without_src(tmp_path):
+    repo = tmp_path / "srv"
+    repo.mkdir()
+    (repo / "package.json").write_text('{"name":"srv","bin":{"srv":"dist/index.js"}}')
+    (repo / "index.ts").write_text("export const ok = true;\n")
+
+    assert bundler.detect(repo).entrypoint == "index.ts"
+
+
+# --- what a bundle must not contain --------------------------------------
+
+
+@needs_toolchain
+def test_the_hashbang_is_stripped(tmp_path):
+    """MCP servers are CLI binaries; the device wraps the bundle in a function.
+
+    esbuild preserves `#!/usr/bin/env node` from the entry file, and a
+    hashbang inside a function body is a syntax error — so every real server
+    would have failed to evaluate on its first line.
+    """
+    repo = _node_repo(
+        tmp_path,
+        body="#!/usr/bin/env node\nglobalThis.ok = true;\n",
+    )
+
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    assert not code.startswith("#!")
+    assert "globalThis.ok" in code
+
+
+@needs_toolchain
+def test_import_meta_is_replaced(tmp_path):
+    """`import.meta` is module syntax and is illegal inside a function body."""
+    repo = _node_repo(
+        tmp_path,
+        body="globalThis.here = import.meta.url;\nglobalThis.all = import.meta;\n",
+    )
+
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    # esbuild labels the substitution with a `// <define:import.meta>` comment,
+    # so the bare string survives harmlessly. What must not survive is an
+    # executable reference.
+    executable = [
+        line
+        for line in code.splitlines()
+        if "import.meta" in line and not line.lstrip().startswith("//")
+    ]
+    assert executable == [], executable
+    assert "file:///mcp-server.js" in code
+
+
+@needs_toolchain
+def test_pure_node_builtins_are_shimmed_not_refused(tmp_path):
+    """path and url manipulate strings; refusing over them refuses most servers.
+
+    The official sequential-thinking server imports exactly these and nothing
+    else that is unavailable.
+    """
+    repo = _node_repo(
+        tmp_path,
+        body=(
+            "import path from 'node:path';\n"
+            "import { fileURLToPath } from 'node:url';\n"
+            "import { EventEmitter } from 'node:events';\n"
+            "globalThis.joined = path.join('/a', 'b', '../c');\n"
+            "globalThis.emitter = new EventEmitter();\n"
+            "globalThis.here = fileURLToPath('file:///x/y.js');\n"
+        ),
+    )
+
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    assert "node:path" not in code
+    assert "node:url" not in code
+
+
+@needs_toolchain
+def test_the_servers_own_package_identity_is_injected(tmp_path):
+    """Several servers refuse to start without reading their own package.json.
+
+    The official sequential-thinking server calls
+    `createRequire(import.meta.url)(".../package.json")` for its version and
+    throws if it cannot find one. There is no file in a bundle, so the two
+    fields that matter are compiled in.
+    """
+    repo = _node_repo(
+        tmp_path,
+        body=(
+            "import { createRequire } from 'node:module';\n"
+            "const require = createRequire(import.meta.url);\n"
+            "globalThis.version = require('/anywhere/package.json').version;\n"
+        ),
+    )
+
+    code = bundler.translate(repo, bundler.detect(repo), SHIMS)
+
+    assert '"weather-mcp"' in code
+    assert '"1.0.0"' in code

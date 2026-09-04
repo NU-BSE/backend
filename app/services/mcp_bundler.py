@@ -75,6 +75,15 @@ CLONE_TIMEOUT_SECONDS = 120
 INSTALL_TIMEOUT_SECONDS = 300
 BUNDLE_TIMEOUT_SECONDS = 120
 
+# Node builtins that are pure computation, shimmed rather than refused.
+#
+# Refusing a server for importing `node:path` would be refusing it for string
+# manipulation. None of these touches the host: they are data structures,
+# formatters and calling-convention adapters, and every one of them is common
+# enough that excluding it would exclude most real servers. The official
+# sequential-thinking server needs three of them and nothing else.
+SHIMMED_BUILTINS = ("path", "url", "events", "util", "module")
+
 # Modules whose absence is fatal on a device. Each maps to the reason, because
 # "cannot resolve node:fs" tells a user nothing about what to do next.
 UNSUPPORTED_BUILTINS = {
@@ -232,6 +241,53 @@ def clone(url: str, ref: str | None, destination: Path) -> None:
         )
 
 
+# Where a source entry lives when package.json points at a build output, in the
+# order a project is most likely to use.
+_ENTRY_CANDIDATES = (
+    "src/index.ts",
+    "src/index.mts",
+    "src/index.js",
+    "src/index.mjs",
+    "src/main.ts",
+    "src/server.ts",
+    "src/cli.ts",
+    "index.ts",
+    "index.mts",
+    "index.js",
+    "index.mjs",
+    "main.ts",
+    "server.ts",
+)
+
+_SOURCE_EXTENSIONS = (".ts", ".mts", ".tsx", ".js", ".mjs", ".jsx")
+
+
+def _source_entry(repo: Path, declared: str | None) -> str | None:
+    """Find the source a declared build output was built from.
+
+    `dist/index.js` is tried as `src/index.ts` and its siblings first, because
+    that mapping is nearly universal and gets the *right* file rather than
+    merely a plausible one — a repository with several entry points would
+    otherwise be bundled from whichever one happens to be listed first below.
+    """
+    if declared:
+        stem = Path(declared).with_suffix("")
+        parts = stem.parts
+        # Strip a leading build directory: dist/index -> index, build/x/y -> x/y.
+        if parts and parts[0] in {"dist", "build", "out", "lib"}:
+            stem = Path(*parts[1:]) if len(parts) > 1 else Path(stem.name)
+        for prefix in ("src", ""):
+            for extension in _SOURCE_EXTENSIONS:
+                candidate = (Path(prefix) / stem).with_suffix(extension)
+                if (repo / candidate).is_file():
+                    return candidate.as_posix()
+
+    for name in _ENTRY_CANDIDATES:
+        if (repo / name).is_file():
+            return name
+    return None
+
+
 def _read_json(path: Path) -> dict[str, object] | None:
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
@@ -313,18 +369,38 @@ def detect(repo: Path) -> Detection:
                     evidence.append(f"package.json: {key} = {value}")
                     break
 
+        # What package.json declares is usually a *build output*. A
+        # TypeScript MCP server publishes dist/index.js to npm and does not
+        # commit it, so a fresh clone has a bin pointing at a file that is not
+        # there — the single most common way translation failed.
+        #
+        # Nothing needs that build. esbuild compiles TypeScript directly, so
+        # bundling from source produces the same program without running the
+        # repository's build script, which would be arbitrary code execution on
+        # this server for no gain.
+        if entry is not None and not (repo / entry).is_file():
+            source = _source_entry(repo, entry)
+            if source is not None:
+                evidence.append(f"{entry} is a build output; bundling {source} instead")
+                entry = source
+            else:
+                entry = None
+
         if entry is None:
-            for candidate in ("src/index.ts", "src/index.js", "index.js", "index.mjs"):
-                if (repo / candidate).is_file():
-                    entry = candidate
-                    evidence.append(f"found {candidate}")
-                    break
+            found = _source_entry(repo, None)
+            if found is not None:
+                entry = found
+                evidence.append(f"found {found}")
 
         if entry is None:
             raise BundleError(
                 BundleErrorType.ENTRYPOINT_NOT_FOUND,
-                "This looks like a Node project but has no entry point.",
-                ["Expected bin, module or main in package.json."],
+                "This looks like a Node project but has no source to build from.",
+                [
+                    "package.json declares no usable entry point, and no "
+                    + ", ".join(_ENTRY_CANDIDATES[:4])
+                    + " was found.",
+                ],
             )
 
         dependencies = package_json.get("dependencies")
@@ -459,6 +535,23 @@ def _unsupported_from_errors(stderr: str) -> list[str]:
     return names
 
 
+def _package_identity(repo: Path) -> str:
+    """The server's own name and version, as JSON for --define.
+
+    A bundled server has no package.json to read, and several insist on
+    reading one — see the note in mcp_host/node/module.mjs. Only these two
+    fields are published: the rest of a package.json is dependency and script
+    metadata that means nothing once bundled.
+    """
+    package = _read_json(repo / "package.json") or {}
+    return json.dumps(
+        {
+            "name": str(package.get("name") or "mcp-server"),
+            "version": str(package.get("version") or "0.0.0"),
+        }
+    )
+
+
 def translate(repo: Path, detection: Detection, shims: Path) -> str:
     """Bundle the server into one file the device can evaluate."""
     if detection.runtime != "NODE":
@@ -505,11 +598,30 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
         # one of them. --inject binds the shim's exported `process` over the
         # unbound global. `node:process` is aliased as well for the minority
         # that import it explicitly.
+        # `import.meta` is module syntax and survives into an ESM bundle, where
+        # the device's async-function wrapper makes it a syntax error. Defining
+        # the whole object — not just `import.meta.url` — is what replaces the
+        # bare references too; defining only the property leaves them behind.
+        #
+        # The value is a plausible-looking URL because the common use is
+        # `fileURLToPath(import.meta.url)` to locate the module. There is no
+        # module and no filesystem, so any subsequent file access fails on its
+        # own terms rather than on a malformed URL here.
+        '--define:import.meta={"url":"file:///mcp-server.js"}',
+        f"--define:__CREEPY_PACKAGE__={_package_identity(repo)}",
         f"--inject:{shims / 'process-shim.mjs'}",
         f"--alias:node:process={shims / 'process-shim.mjs'}",
         f"--alias:process={shims / 'process-shim.mjs'}",
     ]
     args += [f"--alias:{specifier}={shims / 'stdio-shim.mjs'}" for specifier in STDIO_SPECIFIERS]
+
+    # Both spellings: a server may import "path" or "node:path", and esbuild
+    # matches the specifier as written.
+    node_shims = shims / "node"
+    for name in SHIMMED_BUILTINS:
+        target = node_shims / f"{name}.mjs"
+        args.append(f"--alias:{name}={target}")
+        args.append(f"--alias:node:{name}={target}")
 
     try:
         result = _run(args, cwd=repo, timeout=BUNDLE_TIMEOUT_SECONDS)
@@ -538,7 +650,18 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
             detail[:3],
         )
 
-    return output.read_text(encoding="utf-8")
+    code = output.read_text(encoding="utf-8")
+
+    # MCP servers are CLI binaries, so their entry file opens with
+    # `#!/usr/bin/env node` and esbuild faithfully preserves it. The device
+    # wraps the bundle in an async function, where a hashbang is a syntax error
+    # — every real server would have failed to evaluate, on the first line,
+    # with an error pointing at the wrapper rather than at the cause.
+    if code.startswith("#!"):
+        newline = code.find("\n")
+        code = code[newline + 1 :] if newline >= 0 else ""
+
+    return code
 
 
 def build(url: str, ref: str | None = None) -> Bundle:

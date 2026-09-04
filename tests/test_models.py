@@ -189,3 +189,54 @@ async def test_unknown_profile_is_not_enumerable(model_client):
     )
     assert resp.status_code == 404
     assert resp.json()["code"] == "MODEL_FILE_NOT_FOUND"
+
+def test_the_real_2b_filenames_are_published(tmp_path):
+    """The converter's actual output, not the naming this predates.
+
+    `convert.sh` emits `gui-owl-2b-q4_k_m.gguf` and
+    `gui-owl-2b-mmproj-f16.gguf`. The old suffix allow-list matched neither, so
+    the profile was published with zero files — which reads, from the app, as a
+    model that does not exist. The un-quantized text intermediate must still be
+    excluded, and the projector must be labelled as one even though its name
+    does not begin with "mmproj".
+    """
+    root = tmp_path / "models"
+    gguf = root / "2b" / "artifacts" / "gguf"
+    gguf.mkdir(parents=True)
+
+    weights = gguf / "gui-owl-2b-q4_k_m.gguf"
+    projector = gguf / "gui-owl-2b-mmproj-f16.gguf"
+    intermediate = gguf / "gui-owl-2b-f16.gguf"
+    weights.write_bytes(b"weights")
+    projector.write_bytes(b"projector")
+    intermediate.write_bytes(b"intermediate-that-must-not-ship")
+
+    def entry(path):
+        data = path.read_bytes()
+        return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    (gguf / "gui-owl-2b-export-manifest.json").write_text(
+        json.dumps(
+            {
+                "files": {
+                    weights.name: entry(weights),
+                    projector.name: entry(projector),
+                    intermediate.name: entry(intermediate),
+                },
+                "student": "2b",
+            }
+        )
+    )
+
+    settings = make_settings(tmp_path)
+    settings.model_artifact_root = str(root)
+    catalog = ModelCatalog(settings)
+
+    assert catalog.profiles == ("on-device",)
+    bundle = catalog.bundle("on-device")
+    names = {item.name: item.role for item in bundle.files}
+    assert names == {
+        "gui-owl-2b-q4_k_m.gguf": "weights",
+        "gui-owl-2b-mmproj-f16.gguf": "projector",
+    }
+

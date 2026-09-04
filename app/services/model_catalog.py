@@ -35,10 +35,34 @@ PROFILE_TO_MODEL: dict[str, str] = {
     "on-device": "2b",
 }
 
-# Only these two are shipped to devices. The bf16 conversion is an intermediate
-# left in the manifest by the export step; sending it would be several times
-# the bytes for a model the phone cannot run.
-_SHIPPED_SUFFIXES = ("-q4_0.gguf", "-bf16.gguf")
+def _is_projector(name: str) -> bool:
+    """The vision encoder, which ships alongside the text weights.
+
+    Matched anywhere in the name rather than at the start: the 2B converter
+    emits `gui-owl-2b-mmproj-f16.gguf`, so a `startswith` test called it
+    weights and would have published a vision projector as the model.
+    """
+    return "mmproj" in name
+
+
+def _is_shipped(name: str) -> bool:
+    """Whether a file in the manifest belongs on a device.
+
+    Everything except the un-quantized text model. That file is an
+    intermediate of the conversion — several times the bytes, for a model the
+    phone cannot run — and it is deleted after quantizing anyway.
+
+    Previously this was a suffix allow-list (`-q4_0.gguf`, `-bf16.gguf`) which
+    predates the 2B teacher. Its files are `-q4_k_m.gguf` and
+    `-mmproj-f16.gguf`, so *both* were filtered out and the profile was
+    published with no files at all — which reads, from the app, as a model
+    that does not exist.
+    """
+    if not name.endswith(".gguf"):
+        return False
+    if _is_projector(name):
+        return True
+    return not (name.endswith("-f16.gguf") or name.endswith("-bf16.gguf"))
 
 
 @dataclass(frozen=True)
@@ -114,7 +138,7 @@ class ModelCatalog:
 
         files: list[ModelFile] = []
         for name, meta in sorted(entries.items()):
-            if not isinstance(meta, dict) or not name.endswith(_SHIPPED_SUFFIXES):
+            if not isinstance(meta, dict) or not _is_shipped(name):
                 continue
             path = gguf_dir / name
             if not path.is_file():
@@ -141,7 +165,7 @@ class ModelCatalog:
             files.append(
                 ModelFile(
                     name=name,
-                    role="projector" if name.startswith("mmproj") else "weights",
+                    role="projector" if _is_projector(name) else "weights",
                     bytes=actual,
                     sha256=sha,
                     path=path,
