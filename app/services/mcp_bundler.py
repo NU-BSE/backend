@@ -92,7 +92,12 @@ SHIMMED_BUILTINS = (
     "os",
     "http",
     "https",
+    "crypto",
+    "buffer",
 )
+
+# Subpath forms of the shimmed modules, which esbuild matches separately.
+SHIMMED_SUBPATHS = {"fs/promises": "fs-promises.mjs"}
 
 # Modules whose absence is fatal on a device. Each maps to the reason, because
 # "cannot resolve node:fs" tells a user nothing about what to do next.
@@ -649,9 +654,23 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
         )
 
     output = repo / ".creepy-bundle.js"
+
+    # Bundle a generated entry that imports the server for its side effects
+    # rather than the server itself.
+    #
+    # esbuild's ESM output preserves the *entry's* exports, and a real server's
+    # entry commonly exports something — the memory server exports its
+    # KnowledgeGraphManager. A surviving `export {}` is a syntax error inside
+    # the async function the device wraps the bundle in, so the server would
+    # fail to evaluate at all. Importing it for effect gives the same program
+    # with nothing to export.
+    shim_entry = repo / ".creepy-entry.mjs"
+    relative = os.path.relpath(entry, repo).replace(os.sep, "/")
+    shim_entry.write_text(f'import "./{relative}";\n', encoding="utf-8")
+
     args = [
         *_esbuild_command(),
-        str(entry),
+        str(shim_entry),
         "--bundle",
         f"--outfile={output}",
         # esm, not iife, and this is forced rather than chosen. MCP servers
@@ -694,6 +713,7 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
         '--define:__filename="/mcp-server/index.js"',
         f"--define:__CREEPY_SEED_FILES__={_seed_files(repo)}",
         f"--inject:{shims / 'process-shim.mjs'}",
+        f"--inject:{shims / 'node' / 'buffer-global.mjs'}",
         f"--alias:node:process={shims / 'process-shim.mjs'}",
         f"--alias:process={shims / 'process-shim.mjs'}",
     ]
@@ -706,6 +726,16 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
         target = node_shims / f"{name}.mjs"
         args.append(f"--alias:{name}={target}")
         args.append(f"--alias:node:{name}={target}")
+
+    # Subpath specifiers need their own entry. Aliasing `fs` to a *file* makes
+    # esbuild resolve `fs/promises` as a path inside it and fail with "not a
+    # directory" — an error naming the shim rather than the import, which reads
+    # as the sandbox being broken rather than incomplete. The official
+    # filesystem server imports only this form.
+    for specifier, module in SHIMMED_SUBPATHS.items():
+        target = node_shims / module
+        args.append(f"--alias:{specifier}={target}")
+        args.append(f"--alias:node:{specifier}={target}")
 
     try:
         result = _run(args, cwd=repo, timeout=BUNDLE_TIMEOUT_SECONDS)
@@ -742,6 +772,7 @@ def translate(repo: Path, detection: Detection, shims: Path) -> str:
         )
 
     code = output.read_text(encoding="utf-8")
+    shim_entry.unlink(missing_ok=True)
 
     # MCP servers are CLI binaries, so their entry file opens with
     # `#!/usr/bin/env node` and esbuild faithfully preserves it. The device

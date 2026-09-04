@@ -148,11 +148,24 @@ def test_a_server_spawning_processes_is_refused_by_name(tmp_path):
 def test_translation_produces_a_bundle_with_no_module_syntax(tmp_path):
     """The device wraps the bundle in an async function to allow top-level await.
 
-    That only works if esbuild fully inlined every dependency: a surviving
-    `import` or `export` statement is a syntax error inside a function body, and
-    it would fail on the phone rather than here.
+    That only works if nothing of ESM survives: a leftover `import` or `export`
+    statement is a syntax error inside a function body, and it would fail on
+    the phone rather than here.
+
+    The entry *exports* something on purpose. esbuild's ESM output preserves
+    the entry's exports, and real servers export things — the official memory
+    server exports its KnowledgeGraphManager. This fixture used to export
+    nothing, so the check passed while that server could not be evaluated at
+    all.
     """
-    repo = _node_repo(tmp_path, body="globalThis.__ok = await Promise.resolve(1);\n")
+    repo = _node_repo(
+        tmp_path,
+        body=(
+            "export class Manager {}\n"
+            "export const ready = true;\n"
+            "globalThis.__ok = await Promise.resolve(1);\n"
+        ),
+    )
 
     detection = bundler.detect(repo)
     code = bundler.translate(repo, detection, SHIMS)

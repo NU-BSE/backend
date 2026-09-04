@@ -165,6 +165,89 @@ export function copyFileSync(from, to) {
   persist();
 }
 
+/**
+ * Streams over an in-memory file.
+ *
+ * The content is already whole by the time anything asks for it, so the stream
+ * emits one chunk and ends. That differs from Node only in chunk boundaries,
+ * which no correct consumer depends on — a reader that concatenates `data`
+ * events gets exactly the same bytes.
+ */
+class FileStream {
+  constructor() {
+    this._handlers = new Map();
+  }
+
+  on(event, handler) {
+    const handlers = this._handlers.get(event) ?? [];
+    handlers.push(handler);
+    this._handlers.set(event, handlers);
+    return this;
+  }
+
+  once(event, handler) {
+    return this.on(event, handler);
+  }
+
+  emit(event, ...args) {
+    for (const handler of this._handlers.get(event) ?? []) handler(...args);
+    return this;
+  }
+
+  setEncoding(encoding) {
+    this._encoding = encoding;
+    return this;
+  }
+
+  pipe(destination) {
+    this.on('data', (chunk) => destination.write?.(chunk));
+    this.on('end', () => destination.end?.());
+    return destination;
+  }
+
+  destroy() {
+    return this;
+  }
+}
+
+export function createReadStream(path, options) {
+  const stream = new FileStream();
+  const encoding = typeof options === 'string' ? options : options?.encoding;
+  // Deferred so a caller can attach handlers before anything is emitted, as it
+  // would with a real stream.
+  Promise.resolve().then(() => {
+    try {
+      stream.emit('data', readFileSync(path, encoding ? { encoding } : undefined));
+      stream.emit('end');
+      stream.emit('close');
+    } catch (error) {
+      stream.emit('error', error);
+    }
+  });
+  return stream;
+}
+
+export function createWriteStream(path) {
+  const stream = new FileStream();
+  const chunks = [];
+  stream.write = (chunk) => {
+    chunks.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+    return true;
+  };
+  stream.end = (chunk) => {
+    if (chunk) stream.write(chunk);
+    try {
+      writeFileSync(path, chunks.join(''));
+      stream.emit('finish');
+      stream.emit('close');
+    } catch (error) {
+      stream.emit('error', error);
+    }
+    return stream;
+  };
+  return stream;
+}
+
 /** The callback API, over the same store. */
 function callbackify(fn) {
   return (...args) => {
@@ -207,6 +290,7 @@ export const constants = { F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1 };
 export default {
   existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync,
   readdirSync, unlinkSync, rmSync, statSync, renameSync, copyFileSync,
+  createReadStream, createWriteStream,
   readFile, writeFile, mkdir, readdir, unlink, stat,
   promises, constants,
 };
