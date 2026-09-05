@@ -21,6 +21,7 @@ Everything else stays on the device: chat history, auth providers, attestation.
 | POST | `/auth/email/verify-code` | – | verify code, upsert user, issue JWTs |
 | POST | `/auth/refresh` | refresh token | new access token |
 | POST | `/auth/logout` | – | client-side discard (contract only) |
+| POST | `/marketing/download-invite` | – | upsert a Brevo contact, add it to the invite list, emit the download automation event |
 | GET | `/users/me` | bearer | profile |
 | PATCH | `/users/me` | bearer | update name |
 | GET | `/subscriptions/plans` | – | public plan catalogue |
@@ -33,6 +34,30 @@ Auth responses are camelCase (`accessToken`, `refreshToken`,
 `onboardingCompleted`) to match `src/auth/emailAuth.ts` in the frontend.
 `onboardingCompleted` is derived: a user has completed onboarding once they
 have a name.
+
+### Landing download invitations (`POST /marketing/download-invite`)
+
+The public landing site sends `{email, billing, sourcePath}` here instead of
+trying to create contacts from browser JavaScript. The server performs two
+Brevo API calls in order:
+
+1. `POST /v3/contacts` with `updateEnabled: true` and
+   `listIds: [BREVO_CONTACT_LIST_ID]`. This creates a new contact or safely
+   updates an existing one and guarantees list membership before automation.
+2. `POST /v3/events` with event name `app_download_link_requested` and the
+   contact's `email_id`. Event properties include billing, source path, CTA
+   name and trial days.
+
+The Brevo automation should use `app_download_link_requested` as its Custom
+event trigger and then send the Android invitation email. An additional “Add
+contact to a list” action is no longer required because the endpoint does that
+before it emits the event.
+
+Quick duplicate submissions are idempotent for
+`MARKETING_INVITE_COOLDOWN_SECONDS`; public requests are also capped per IP per
+hour. Production must keep `BREVO_API_KEY` server-side, set
+`BREVO_CONTACT_LIST_ID` to the intended list (currently `2`), and include the
+landing origin (for example `https://creepy.im`) in `CORS_ORIGINS`.
 
 ### The agent gate (`POST /chat/http`)
 
@@ -51,7 +76,7 @@ have a name.
 {"type":"TEXT_MESSAGE_START","messageId":...,"role":"assistant"}
 {"type":"TEXT_MESSAGE_CONTENT","messageId":...,"delta":"..."}   (xN)
 {"type":"TEXT_MESSAGE_END","messageId":...}
-{"type":"RUN_FINISHED","threadId":...,"runId":...}
+{"type":"RUN_FINISHED","threadId":... ,"runId":...}
 ```
 
 Failed runs terminate with `RUN_ERROR` (never a silent close).
@@ -75,7 +100,7 @@ The schema (`sql/migrate_001.sql`) is applied idempotently on startup and the
 
 With `LLM_MOCK=true` (default in `.env.example`) the agent streams a canned
 reply, so the whole gate can be exercised without any LLM keys. With no
-`BREVO_API_KEY`, verification codes are logged instead of emailed outside
+`BREVO_API_KEY`, verification codes and marketing calls are suppressed outside
 production. Production also requires a Brevo-verified sender in `EMAIL_FROM`.
 
 ### Granting access (manual MVP)
@@ -103,6 +128,8 @@ Tests run against sqlite + the in-memory TTL store — no services required.
 - `EXPO_PUBLIC_API_URL` → this service's base URL (auth + users + subscriptions).
 - `EXPO_PUBLIC_TANSTACK_AI_BASE_URL` → this service's base URL; the client
   then calls `POST {base}/chat/http` via `xhrHttpStream` (src/ai/index.ts).
+- The landing site uses the same service base URL for
+  `POST /marketing/download-invite`.
 - The remote connection must send `Authorization: Bearer <accessToken>` —
   pass it via `xhrHttpStream(url, { headers: { Authorization: ... } })`.
   Without the header the gate cannot work.
