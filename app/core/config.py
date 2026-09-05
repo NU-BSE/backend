@@ -57,6 +57,10 @@ class Settings(BaseSettings):
 
     brevo_api_key: str = ""
     email_from: str = ""
+    # Brevo list that receives every web visitor requesting the Android invite.
+    brevo_contact_list_id: int = Field(default=2, ge=1)
+    marketing_invite_cooldown_seconds: int = Field(default=60, ge=5, le=3600)
+    marketing_invite_max_per_ip_per_hour: int = Field(default=30, ge=1, le=1000)
 
     llm_upstream_url: str = ""
     llm_upstream_api_key: str = ""
