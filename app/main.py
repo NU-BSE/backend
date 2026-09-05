@@ -16,6 +16,7 @@ from app.api.routes import (
     chat,
     device,
     health,
+    marketing,
     mcp,
     models,
     subscriptions,
@@ -33,6 +34,7 @@ from app.core.logging import RequestContextMiddleware, configure_logging
 from app.db.schema import apply_schema, seed_plans
 from app.db.session import create_engine_and_session_factory
 from app.kv.store import MemoryTTLStore, RedisTTLStore, TTLStore
+from app.services.brevo_marketing import BrevoMarketingService
 from app.services.email_codes import EmailCodeService
 from app.services.email_sender import EmailSender
 from app.services.model_catalog import ModelCatalog
@@ -77,6 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.http_client = http_client
         app.state.email_code_service = EmailCodeService(store, settings)
         app.state.email_sender = EmailSender(http_client, settings)
+        app.state.brevo_marketing_service = BrevoMarketingService(http_client, settings)
         app.state.usage_meter = UsageMeter(store)
         app.state.play_client = PlayClient(settings, http_client)
         app.state.model_catalog = ModelCatalog(settings)
@@ -126,7 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agent.router)
     app.include_router(device.router)
     app.include_router(mcp.router)
-
+    app.include_router(marketing.router)
 
     @app.get("/")
     async def root() -> dict[str, str]:
