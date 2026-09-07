@@ -24,13 +24,15 @@ from app.core.config import Settings
 
 logger = logging.getLogger("app.models")
 
-# The memory profiles offered in onboarding, mapped to the student model each
-# one runs. `cloud` is absent on purpose: opting out of local inference means
-# there is nothing to download, not a zero-byte download.
+# The memory profile offered in onboarding, mapped to the model it runs.
+# `cloud` is absent on purpose: opting out of local inference means there is
+# nothing to download, not a zero-byte download.
+#
+# One entry since the 0.5B, 1B and 1.5B students were retired in favour of the
+# 2B teacher. Three profiles pointing at one model would be a menu that
+# misleads, and the smaller students are no longer built.
 PROFILE_TO_MODEL: dict[str, str] = {
-    "efficient": "0.5b",
-    "balanced": "1b",
-    "performance": "1.5b",
+    "on-device": "2b",
 }
 
 # Only these two are shipped to devices. The bf16 conversion is an intermediate

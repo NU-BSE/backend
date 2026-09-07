@@ -1,7 +1,12 @@
-.PHONY: install infra run test lint typecheck check llama llama-cpu
+.PHONY: install infra run test lint typecheck check llama llama-cpu keys
 
 install:
 	python -m pip install -e ".[dev]"
+
+# Device-licensing secrets. Refuses to overwrite: regenerating either one
+# breaks licences and shards already in the field.
+keys:
+	python scripts/generate_license_keys.py
 
 infra:
 	docker compose up -d postgres redis

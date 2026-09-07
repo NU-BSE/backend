@@ -57,6 +57,10 @@ class Settings(BaseSettings):
 
     brevo_api_key: str = ""
     email_from: str = ""
+    # Brevo list that receives every web visitor requesting the Android invite.
+    brevo_contact_list_id: int = Field(default=2, ge=1)
+    marketing_invite_cooldown_seconds: int = Field(default=60, ge=5, le=3600)
+    marketing_invite_max_per_ip_per_hour: int = Field(default=30, ge=1, le=1000)
 
     llm_upstream_url: str = ""
     llm_upstream_api_key: str = ""
@@ -96,6 +100,23 @@ class Settings(BaseSettings):
     # Only relevant if you ever disable it: a purchase token is bearer proof of
     # payment, so a leaked one would otherwise entitle whoever presents it.
     play_verify_enabled: bool = True
+
+    # Device-bound model licensing.
+    #
+    # The signing key is asymmetric on purpose: the app must verify licences,
+    # so whatever verifies them ships inside the app. An HMAC secret would
+    # therefore be extractable from any build and would let its holder mint
+    # licences; the app carries only the public half.
+    license_signing_key: str = ""
+    """RSA private key, PEM. Empty disables licence issuance entirely."""
+    model_keys_json: str = ""
+    """{"<modelVersion>": "<base64 AES key>"} — dropping a version revokes it."""
+    require_strong_integrity: bool = False
+    """Demand MEETS_STRONG_INTEGRITY rather than MEETS_DEVICE_INTEGRITY."""
+
+    # Where translated MCP server bundles are written. Content-addressed, so
+    # this is a cache: deleting it costs a re-translation, never correctness.
+    mcp_bundle_root: str = "var/mcp-bundles"
 
     # On-device model weights served to paying clients.
     model_artifact_root: str = "app/models"

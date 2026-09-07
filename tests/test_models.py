@@ -40,8 +40,7 @@ def _write_bundle(root, model: str, *, corrupt_size: bool = False) -> dict:
 @pytest.fixture
 def model_settings(tmp_path):
     root = tmp_path / "models"
-    for model in ("0.5b", "1b", "1.5b"):
-        _write_bundle(root, model)
+    _write_bundle(root, "2b")
     settings = make_settings(tmp_path)
     settings.model_artifact_root = str(root)
     return settings
@@ -85,22 +84,27 @@ async def _grant_pro(client, headers) -> None:
 def test_catalog_skips_a_profile_whose_manifest_lies(tmp_path):
     """A size that does not match the file on disk would fail every client."""
     root = tmp_path / "models"
-    _write_bundle(root, "0.5b", corrupt_size=True)
+    _write_bundle(root, "2b", corrupt_size=True)
     settings = make_settings(tmp_path)
     settings.model_artifact_root = str(root)
 
     catalog = ModelCatalog(settings)
-    assert "efficient" not in catalog.profiles
+    assert "on-device" not in catalog.profiles
 
 
 def test_catalog_omits_profiles_with_no_artifacts(tmp_path):
+    """Nothing on disk is advertised as nothing, not as a download that 404s."""
     root = tmp_path / "models"
-    _write_bundle(root, "0.5b")
+    root.mkdir(parents=True)
     settings = make_settings(tmp_path)
     settings.model_artifact_root = str(root)
 
-    catalog = ModelCatalog(settings)
-    assert catalog.profiles == ("efficient",)
+    assert ModelCatalog(settings).profiles == ()
+
+    # And the same root, once the bundle is exported, offers exactly the one
+    # profile that has artifacts.
+    _write_bundle(root, "2b")
+    assert ModelCatalog(settings).profiles == ("on-device",)
 
 
 async def test_catalog_is_readable_before_paying(model_client):
@@ -112,7 +116,7 @@ async def test_catalog_is_readable_before_paying(model_client):
     body = resp.json()
     assert body["downloadAllowed"] is False
     profiles = {bundle["profile"] for bundle in body["bundles"]}
-    assert profiles == {"efficient", "balanced", "performance"}
+    assert profiles == {"on-device"}
     for bundle in body["bundles"]:
         assert bundle["totalBytes"] > 0
         for entry in bundle["files"]:
@@ -129,7 +133,7 @@ async def test_catalog_requires_authentication(model_client):
 async def test_download_refused_without_a_subscription(model_client):
     headers = await _auth(model_client, "freeloader@creepy.im")
     resp = await model_client.get(
-        "/models/efficient/files/gui-owl-0.5b-q4_0.gguf", headers=headers
+        "/models/on-device/files/gui-owl-2b-q4_0.gguf", headers=headers
     )
     assert resp.status_code == 402
     assert resp.json()["code"] == "SUBSCRIPTION_REQUIRED"
@@ -143,12 +147,12 @@ async def test_download_allowed_once_subscribed(model_client):
     assert catalog.json()["downloadAllowed"] is True
 
     resp = await model_client.get(
-        "/models/efficient/files/gui-owl-0.5b-q4_0.gguf", headers=headers
+        "/models/on-device/files/gui-owl-2b-q4_0.gguf", headers=headers
     )
     assert resp.status_code == 200, resp.text
-    assert resp.content == b"weights-0.5b"
+    assert resp.content == b"weights-2b"
     # The client verifies what it got without re-reading the catalogue.
-    assert resp.headers["x-model-sha256"] == hashlib.sha256(b"weights-0.5b").hexdigest()
+    assert resp.headers["x-model-sha256"] == hashlib.sha256(b"weights-2b").hexdigest()
 
 
 async def test_download_supports_range_for_resume(model_client):
@@ -156,12 +160,12 @@ async def test_download_supports_range_for_resume(model_client):
     await _grant_pro(model_client, headers)
 
     resp = await model_client.get(
-        "/models/efficient/files/gui-owl-0.5b-q4_0.gguf",
+        "/models/on-device/files/gui-owl-2b-q4_0.gguf",
         headers={**headers, "Range": "bytes=8-"},
     )
     # A dropped mobile download must resume, not restart a gigabyte.
     assert resp.status_code == 206, resp.text
-    assert resp.content == b"0.5b"
+    assert resp.content == b"2b"
 
 
 async def test_path_traversal_is_not_a_path(model_client):
@@ -171,7 +175,7 @@ async def test_path_traversal_is_not_a_path(model_client):
 
     for name in ("../../../../etc/passwd", "..%2f..%2fetc%2fpasswd", "/etc/passwd"):
         resp = await model_client.get(
-            f"/models/efficient/files/{name}", headers=headers
+            f"/models/on-device/files/{name}", headers=headers
         )
         assert resp.status_code in (400, 404), f"{name} -> {resp.status_code}"
 
@@ -181,7 +185,7 @@ async def test_unknown_profile_is_not_enumerable(model_client):
     await _grant_pro(model_client, headers)
 
     resp = await model_client.get(
-        "/models/cloud/files/gui-owl-0.5b-q4_0.gguf", headers=headers
+        "/models/cloud/files/gui-owl-2b-q4_0.gguf", headers=headers
     )
     assert resp.status_code == 404
     assert resp.json()["code"] == "MODEL_FILE_NOT_FOUND"

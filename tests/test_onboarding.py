@@ -42,8 +42,7 @@ async def model_client(tmp_path):
     from app.main import create_app
 
     root = tmp_path / "models"
-    for model in ("0.5b", "1b", "1.5b"):
-        _write_bundle(root, model)
+    _write_bundle(root, "2b")
     settings = make_settings(tmp_path)
     settings.model_artifact_root = str(root)
 
