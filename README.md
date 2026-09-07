@@ -26,13 +26,23 @@ Everything else stays on the device: chat history, auth providers, attestation.
 | GET | `/subscriptions/plans` | – | public plan catalogue |
 | GET | `/subscriptions/me` | bearer | active subscription + entitlements |
 | POST | `/admin/grant` | admin bearer | manual subscription grant (MVP switch) |
+| POST | `/admin/grant-beta` | admin bearer | custdev/beta override: onboarding without a paywall |
+| POST | `/admin/revoke-beta` | admin bearer | remove a beta override |
+| GET | `/onboarding/me` | bearer | current onboarding v2 state |
+| PATCH | `/onboarding/me/intents` | bearer | save initial intents + custom intent |
+| PATCH | `/onboarding/me/ai-mode` | bearer | save local/cloud AI preference |
+| POST | `/onboarding/me/first-task/start` | bearer | mark the first real task started |
+| POST | `/onboarding/me/first-task/complete` | bearer | record first-task outcome and tools |
+| POST | `/onboarding/me/feedback` | bearer | save post-first-task feedback |
+| POST | `/onboarding/me/complete` | bearer | finish onboarding |
 | POST | `/chat/http` | bearer | gated AG-UI streaming agent proxy |
 | GET | `/healthz` | – | db + config checks |
 
 Auth responses are camelCase (`accessToken`, `refreshToken`,
 `onboardingCompleted`) to match `src/auth/emailAuth.ts` in the frontend.
-`onboardingCompleted` is derived: a user has completed onboarding once they
-have a name.
+`onboardingCompleted` reflects the onboarding v2 state: a brand-new account is
+not complete (it goes through the flow); a pre-v2 account with a name is
+migrated to completed.
 
 ### The agent gate (`POST /chat/http`)
 

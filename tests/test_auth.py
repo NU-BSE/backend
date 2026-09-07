@@ -36,8 +36,9 @@ async def test_verify_code_registration_issues_tokens(client):
     assert body["accessToken"]
     assert body["refreshToken"]
     assert body["email"] == "reg@creepy.im"
-    # Name supplied at registration -> onboarding complete.
-    assert body["onboardingCompleted"] is True
+    # A brand-new account starts onboarding v2 (auth_completed), so it is NOT
+    # onboarding-complete yet — the frontend routes it through the flow.
+    assert body["onboardingCompleted"] is False
 
 
 async def test_verify_code_login_without_name(client):
@@ -89,8 +90,11 @@ async def test_login_existing_user_returns_same_account(client):
     await clear_cooldown(client, "same@creepy.im")
     second = await register_user(client, email="same@creepy.im", name=None)
     assert first["email"] == second["email"] == "same@creepy.im"
-    # Second call is a login; tokens are fresh but onboarding stays complete.
-    assert second["onboardingCompleted"] is True
+    # The account is the same and tokens are fresh. This user registered under
+    # v2 and is mid-onboarding (auth_completed), so a login still reports
+    # onboarding as incomplete — the client resumes the flow rather than
+    # jumping to the feed.
+    assert second["onboardingCompleted"] is False
 
 
 async def test_refresh_issues_new_access_token(client):

@@ -4,9 +4,18 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Subscription, SubscriptionEntitlement, SubscriptionPlan, User
+from app.db.models import (
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlan,
+    User,
+    UserOnboarding,
+)
 
 ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trialing")
+
+# Sentinel distinguishing "don't touch this column" from "set it to NULL".
+_UNSET = object()
 
 
 def new_id(prefix: str) -> str:
@@ -134,6 +143,13 @@ async def clear_entitlements(session: AsyncSession, user_id: str) -> None:
     await session.flush()
 
 
+async def revoke_entitlement(session: AsyncSession, user_id: str, entitlement: str) -> None:
+    existing = await session.get(SubscriptionEntitlement, (user_id, entitlement))
+    if existing is not None:
+        await session.delete(existing)
+        await session.flush()
+
+
 async def get_active_entitlements(session: AsyncSession, user_id: str) -> set[str]:
     now = datetime.now(timezone.utc)
     result = await session.execute(
@@ -148,3 +164,48 @@ async def get_active_entitlements(session: AsyncSession, user_id: str) -> set[st
 
 def lifetime_period_end() -> datetime:
     return datetime.now(timezone.utc) + timedelta(days=365 * 100)
+
+
+async def get_onboarding(session: AsyncSession, user_id: str) -> UserOnboarding | None:
+    return await session.get(UserOnboarding, user_id)
+
+
+async def create_onboarding(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    version: int,
+    status: str,
+) -> UserOnboarding:
+    onboarding = UserOnboarding(user_id=user_id, version=version, status=status)
+    session.add(onboarding)
+    await session.flush()
+    return onboarding
+
+
+async def update_onboarding(
+    session: AsyncSession,
+    onboarding: UserOnboarding,
+    *,
+    status: str | None = None,
+    intents: list[str] | None = None,
+    custom_intent: str | object | None = _UNSET,
+    ai_mode: str | None = None,
+    first_task: dict | None = None,
+    feedback: dict | None = None,
+) -> None:
+    now = datetime.now(timezone.utc)
+    if status is not None:
+        onboarding.status = status
+    if intents is not None:
+        onboarding.intents = intents
+    if custom_intent is not _UNSET:
+        onboarding.custom_intent = custom_intent  # type: ignore[assignment]
+    if ai_mode is not None:
+        onboarding.ai_mode = ai_mode
+    if first_task is not None:
+        onboarding.first_task = first_task
+    if feedback is not None:
+        onboarding.feedback = feedback
+    onboarding.updated_at = now
+    await session.flush()

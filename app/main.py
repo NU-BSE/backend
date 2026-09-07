@@ -16,6 +16,7 @@ from app.api.routes import (
     chat,
     health,
     models,
+    onboarding,
     subscriptions,
     users,
 )
@@ -122,6 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(models.router)
     app.include_router(agent.router)
+    app.include_router(onboarding.router)
 
 
     @app.get("/")

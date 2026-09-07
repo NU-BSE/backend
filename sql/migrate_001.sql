@@ -138,3 +138,28 @@ CREATE TABLE IF NOT EXISTS subscription_entitlements (
   expires_at  TIMESTAMPTZ,
   PRIMARY KEY (user_id, entitlement)
 );
+
+
+-- ----------------------------------------------------------------------------
+-- 3. Onboarding v2 — resume state, not permission state
+-- ----------------------------------------------------------------------------
+
+-- The server is the source of truth for which onboarding steps a user has
+-- completed, so a client can resume after a kill, an OAuth roundtrip, a
+-- Telegram handshake, a local-model download or a network failure.
+--
+-- This table records *intent* (what the user wanted help with) and progress.
+-- It deliberately holds no permission or scope state: which services hold a
+-- granted scope lives on the device, and intents are interests, not grants.
+CREATE TABLE IF NOT EXISTS user_onboarding (
+  user_id       TEXT PRIMARY KEY REFERENCES users (user_id) ON DELETE CASCADE,
+  version       INTEGER NOT NULL DEFAULT 2,
+  status        TEXT NOT NULL,
+  intents       JSONB NOT NULL DEFAULT '[]'::jsonb,
+  custom_intent TEXT,
+  ai_mode       TEXT CHECK (ai_mode IN ('local', 'cloud')),
+  first_task    JSONB NOT NULL DEFAULT '{}'::jsonb,
+  feedback      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -68,6 +68,22 @@ class GrantResponse(CamelModel):
     entitlements: EntitlementsResponse
 
 
+class BetaGrantRequest(CamelModel):
+    """Custdev / beta override: this user passes onboarding without a paywall.
+
+    A grant is a server-side decision recorded in the entitlement table, so the
+    app never has to know which accounts are special — it only reads
+    `subscriptionRequired` and behaves accordingly.
+    """
+
+    user_id: str
+
+
+class BetaGrantResponse(CamelModel):
+    granted: bool
+    entitlements: set[str]
+
+
 class PlayVerifyRequest(CamelModel):
     """What the app knows after Play reports a successful purchase.
 

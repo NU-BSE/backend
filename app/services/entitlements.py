@@ -22,7 +22,11 @@ logger = logging.getLogger("app.entitlements")
 
 ENTITLEMENT_AGENT_ACCESS = "agent_access"
 ENTITLEMENT_CLOUD_AGENT = "cloud_agent_allowed"
-
+# Custdev / beta override: a user granted this entitlement passes onboarding
+# without a subscription. It is a DB entitlement (not a config whitelist in
+# the client), granted through the admin API, so beta users are a server-side
+# decision.
+ENTITLEMENT_BETA = "beta_access"
 
 # What a demo account is given. Deliberately the Pro daily cap rather than an
 # unlimited one: these credentials are published to reviewers and can leak, and
@@ -89,6 +93,26 @@ def demo_entitlements() -> EffectiveEntitlements:
     )
 
 
+def beta_entitlements() -> EffectiveEntitlements:
+    """Custdev / beta access: everything, with no paywall.
+
+    Unlike demo accounts this is a persisted DB entitlement, granted and
+    revoked through the admin API rather than configuration, so it survives
+    restarts and can be applied to real addresses. Same bounded allowance as
+    demo: a beta grant is handed out to real humans and should not be
+    unlimited.
+    """
+    return EffectiveEntitlements(
+        agent_access=True,
+        cloud_agent_allowed=True,
+        max_agent_messages_per_day=DEMO_MAX_AGENT_MESSAGES_PER_DAY,
+        plan_code="beta",
+        subscription_status="beta",
+        current_period_end=None,
+        subscription_required=False,
+    )
+
+
 async def materialize(
     session: AsyncSession,
     *,
@@ -122,6 +146,11 @@ async def sync_for_user(
     if is_demo_account(settings, user):
         logger.info("demo account %s: entitlements granted without billing", user_id)
         return demo_entitlements()
+
+    active = await repo.get_active_entitlements(session, user_id)
+    if ENTITLEMENT_BETA in active:
+        logger.info("beta account %s: entitlements granted without billing", user_id)
+        return beta_entitlements()
 
     subscription = await repo.get_active_subscription(session, user_id)
     if subscription is None:

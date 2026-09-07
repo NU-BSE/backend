@@ -120,3 +120,34 @@ class SubscriptionEntitlement(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class UserOnboarding(Base):
+    """Onboarding v2 state, persisted so the client can resume after a kill,
+    an OAuth roundtrip, a Telegram handshake or a network failure.
+
+    This is *intent and progress*, never permission state. What the user
+    selected tells us what they wanted help with; it says nothing about which
+    services actually hold a granted scope, which live on the device.
+    """
+
+    __tablename__ = "user_onboarding"
+
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=2)
+    status: Mapped[str] = mapped_column(String)
+    intents: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=list
+    )
+    custom_intent: Mapped[str | None] = mapped_column(Text)
+    ai_mode: Mapped[str | None] = mapped_column(String)
+    first_task: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=dict
+    )
+    feedback: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+

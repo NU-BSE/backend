@@ -25,7 +25,7 @@ from app.schemas.auth import (
     VerifyCodeRequest,
     VerifyCodeResponse,
 )
-from app.services import entitlements
+from app.services import entitlements, onboarding
 from app.services.email_codes import EmailCodeService
 from app.services.email_sender import EmailSender
 
@@ -110,6 +110,7 @@ async def verify_code(
     )
 
     user = await repo.get_user_by_email(db, email)
+    was_new = user is None
     if user is None:
         user = await repo.create_user(db, email=email, name=challenge.name)
         await _grant_free_plan(db, user)
@@ -117,12 +118,16 @@ async def verify_code(
     else:
         logger.info("logged in user %s", user.user_id)
 
+    onboarding_state = await onboarding.complete_after_auth(
+        db, user, was_new=was_new
+    )
+
     access_token = create_access_token(settings, user.user_id, email)
     refresh_token = create_refresh_token(settings, user.user_id, email)
     return VerifyCodeResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        onboarding_completed=user.name is not None,
+        onboarding_completed=onboarding.is_completed(onboarding_state),
         email=email,
     )
 
@@ -165,12 +170,17 @@ async def _demo_sign_in(
     )
 
     user = await repo.get_user_by_email(db, email)
+    was_new = user is None
     if user is None:
         user = await repo.create_user(db, email=email, name=name)
         await _grant_free_plan(db, user)
         logger.warning("demo sign-in: registered %s (%s)", email, user.user_id)
     else:
         logger.warning("demo sign-in: %s (%s)", email, user.user_id)
+
+    onboarding_state = await onboarding.complete_after_auth(
+        db, user, was_new=was_new
+    )
 
     return RequestCodeResponse(
         # No challenge was created; there is nothing to answer.
@@ -180,7 +190,7 @@ async def _demo_sign_in(
         auto_verified=True,
         access_token=create_access_token(settings, user.user_id, email),
         refresh_token=create_refresh_token(settings, user.user_id, email),
-        onboarding_completed=user.name is not None,
+        onboarding_completed=onboarding.is_completed(onboarding_state),
     )
 
 

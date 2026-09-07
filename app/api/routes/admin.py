@@ -8,6 +8,8 @@ from app.core.errors import ApiError
 from app.db import repositories as repo
 from app.db.models import User
 from app.schemas.subscriptions import (
+    BetaGrantRequest,
+    BetaGrantResponse,
     EntitlementsResponse,
     GrantRequest,
     GrantResponse,
@@ -66,3 +68,45 @@ async def grant(
             current_period_end=subscription.current_period_end,
         ),
     )
+
+
+@router.post("/grant-beta", response_model=BetaGrantResponse)
+async def grant_beta(
+    body: BetaGrantRequest,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> BetaGrantResponse:
+    """Mark a user as custdev/beta: onboarding without a paywall.
+
+    The override is a persisted entitlement, so it survives restarts and is
+    revoked the same way it was granted. It does not touch the subscription
+    tables — like a demo grant it is a property of the account, not of a
+    billing record.
+    """
+    user = await repo.get_user_by_id(db, body.user_id)
+    if user is None:
+        raise ApiError(404, "USER_NOT_FOUND", "No such user")
+
+    await repo.upsert_entitlements(
+        db,
+        user_id=user.user_id,
+        entitlements={entitlements.ENTITLEMENT_BETA: None},
+        source="grant",
+    )
+    active = await repo.get_active_entitlements(db, user.user_id)
+    return BetaGrantResponse(granted=entitlements.ENTITLEMENT_BETA in active, entitlements=active)
+
+
+@router.post("/revoke-beta", response_model=BetaGrantResponse)
+async def revoke_beta(
+    body: BetaGrantRequest,
+    _admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> BetaGrantResponse:
+    user = await repo.get_user_by_id(db, body.user_id)
+    if user is None:
+        raise ApiError(404, "USER_NOT_FOUND", "No such user")
+
+    await repo.revoke_entitlement(db, user.user_id, entitlements.ENTITLEMENT_BETA)
+    active = await repo.get_active_entitlements(db, user.user_id)
+    return BetaGrantResponse(granted=entitlements.ENTITLEMENT_BETA in active, entitlements=active)
